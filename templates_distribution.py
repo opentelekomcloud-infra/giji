@@ -422,7 +422,7 @@ def main():
             logger.info("=" * 50)
 
             if not check_repository_exists(repo_name):
-                logger.warning("Repository %s not found in org %s, skipping...",repo_name, GITHUB_ORG)
+                logger.warning("Repository %s not found in org %s, skipping...", repo_name, GITHUB_ORG)
                 skipped_repos += 1
                 continue
 

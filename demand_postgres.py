@@ -369,7 +369,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping):
         issue_data["fields"]["labels"] = ["demand", "github-import", repo_name]
 
         logger.info(
-            "Creating Jira issue for GitHub Issue #%s from %s: %s",issue_number, repo_name, issue['title'])
+            "Creating Jira issue for GitHub Issue #%s from %s: %s", issue_number, repo_name, issue['title'])
 
         response = requests.post(
             f"{JIRA_URL}/rest/api/2/issue",
