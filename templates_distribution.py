@@ -220,7 +220,7 @@ def create_pull_request(repo_name, branch_name, title, body):
     else:
         try:
             error_msg = response.json().get("message", response.text)
-        except:
+        except (ValueError, KeyError):
             error_msg = response.text
         logger.error(f"Failed to create PR: {response.status_code} {error_msg}")
         return False, None
