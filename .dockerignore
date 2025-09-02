@@ -1,0 +1,11 @@
+*.png
+__pycache__/
+*.pyc
+.github/
+*.ini
+*.yaml
+*.yml
+*.md
+README*
+.git/
+.gitignore
