@@ -148,19 +148,18 @@ def create_label_in_repo(repo_name, label_config):
     elif response.status_code == 422:
         error_data = response.json()
         if "already_exists" in error_data.get("message", "").lower():
-            logger.info(f"⚠️  {repo_name} - label '{label_config['name']}' already exists")
+            logger.info(f"{repo_name} - label '{label_config['name']}' already exists")
             return True
         else:
             logger.error(
-                f"{repo_name} - error creating label '{label_config['name']}': {error_data.get('message',
-                                                                                               'Unknown error')}")
+                f"{repo_name} - error creating label '{label_config['name']}':"
+                f" {error_data.get('message', 'Unknown error')}")
             return False
     else:
         try:
             error_msg = response.json().get("message", response.text)
-        except:
-            logging.exception("Error")
-            raise
+        except (ValueError, KeyError):
+            error_msg = response.text
         logger.error(
             f"{repo_name} - error {response.status_code} creating label '{label_config['name']}': {error_msg}")
         return False
@@ -222,9 +221,7 @@ def create_pull_request(repo_name, branch_name, title, body):
         try:
             error_msg = response.json().get("message", response.text)
         except:
-            logging.exception("Error")
-            raise
-
+            error_msg = response.text
         logger.error(f"Failed to create PR: {response.status_code} {error_msg}")
         return False, None
 
