@@ -63,7 +63,7 @@ PR_TITLE = "Add issue templates for bug reports and feature requests"
 PR_BODY = """This PR adds standardized issue templates to improve issue reporting:
 
 - **bug-report.yml**: Template for bug reports with structured fields
-- **demand.yml**: Template for feature requests and demands  
+- **demand.yml**: Template for feature requests and demands
 - **config.yml**: Configuration for issue template chooser
 
 These templates will help users provide better structured information when creating issues."""
@@ -94,7 +94,7 @@ def get_repositories_from_db():
 
         query = """
             SELECT "Repository", "Squad", "Title"
-            FROM repo_title_category 
+            FROM repo_title_category
             WHERE "Squad" IN %s
             ORDER BY "Squad", "Repository"
         """
@@ -159,7 +159,8 @@ def create_label_in_repo(repo_name, label_config):
         try:
             error_msg = response.json().get("message", response.text)
         except:
-            error_msg = response.text
+            logging.exception("Error")
+            raise
         logger.error(
             f"{repo_name} - error {response.status_code} creating label '{label_config['name']}': {error_msg}")
         return False
@@ -221,7 +222,9 @@ def create_pull_request(repo_name, branch_name, title, body):
         try:
             error_msg = response.json().get("message", response.text)
         except:
-            error_msg = response.text
+            logging.exception("Error")
+            raise
+
         logger.error(f"Failed to create PR: {response.status_code} {error_msg}")
         return False, None
 

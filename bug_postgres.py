@@ -89,7 +89,7 @@ def get_repositories_from_db():
 
         query = """
             SELECT "Repository", "Squad", "Title"
-            FROM repo_title_category 
+            FROM repo_title_category
             WHERE "Squad" IN %s
             ORDER BY "Squad", "Repository"
         """
@@ -267,8 +267,6 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
     successful_imports = 0
     failed_imports = 0
     skipped_imports = 0
-
-    available_fields = jira_metadata['fields']
 
     template_field_map = {
         "master_component": "customfield_17001",
@@ -472,7 +470,7 @@ def main():
                 logger.error(f"ERROR processing repository {repo_name}: {str(e)}")
                 continue
 
-        logger.info(f"FINAL SUMMARY - All repositories processed:")
+        logger.info("FINAL SUMMARY - All repositories processed:")
         logger.info(f"  Total repositories processed: {len(repositories)}")
         logger.info(f"  Total successfully imported: {total_successful} issues")
         logger.info(f"  Total failed to import: {total_failed} issues")

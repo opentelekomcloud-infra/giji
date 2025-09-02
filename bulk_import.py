@@ -356,7 +356,7 @@ def main():
                 logger.error(f"ERROR processing repository {repo_name}: {str(e)}")
                 continue
 
-        logger.info(f"\nFINAL SUMMARY - Bulk Import Completed:")
+        logger.info("\nFINAL SUMMARY - Bulk Import Completed:")
         logger.info(f"  Total repositories processed: {len(repositories)}")
         logger.info(f"  Total successfully imported: {total_successful} issues")
         logger.info(f"  Total failed to import: {total_failed} issues")
