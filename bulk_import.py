@@ -1,7 +1,9 @@
-import requests
-import os
+"""Module for bulk importing GitHub issues to Jira."""
 import logging
+import os
 import time
+
+import requests
 
 GITHUB_ORG = "opentelekomcloud-docs"
 
@@ -89,11 +91,12 @@ def export_all_github_issues(repo_name, state="open"):
                 "per_page": per_page,
                 "page": page
             },
-            headers=GITHUB_HEADERS
+            headers=GITHUB_HEADERS,
+            timeout=30
         )
 
         if response.status_code != 200:
-            raise Exception(f"GitHub API request failed for {repo_name}: {response.status_code} {response.text}")
+            raise ValueError(f"GitHub API request failed for {repo_name}: {response.status_code} {response.text}")
 
         issues = response.json()
         if not issues:
@@ -106,7 +109,7 @@ def export_all_github_issues(repo_name, state="open"):
         page += 1
         time.sleep(0.1)
 
-    logger.info(f"Found {len(all_issues)} total issues in repository {repo_name}")
+    logger.info("Found %d total issues in repository %s", len(all_issues), repo_name)
     return all_issues
 
 
@@ -124,16 +127,17 @@ def add_imported_label(issue_number, repo_name):
     response = requests.post(
         f"{GITHUB_API_URL}/repos/{GITHUB_ORG}/{repo_name}/issues/{issue_number}/labels",
         headers=GITHUB_HEADERS,
-        json={"labels": IMPORTED_LABELS}
+        json={"labels": IMPORTED_LABELS},
+        timeout=30
     )
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to add imported labels to issue #{issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to add imported labels to issue #%d in %s: %d %s",
+            issue_number, repo_name, response.status_code, response.text)
         return False
 
-    logger.info(f"Added {IMPORTED_LABELS} labels to issue #{issue_number} in {repo_name}")
+    logger.info("Added %s labels to issue #%d in %s", IMPORTED_LABELS, issue_number, repo_name)
     return True
 
 
@@ -143,16 +147,17 @@ def add_jira_link_to_github_issue(issue_number, jira_key, repo_name):
     response = requests.post(
         f"{GITHUB_API_URL}/repos/{GITHUB_ORG}/{repo_name}/issues/{issue_number}/comments",
         headers=GITHUB_HEADERS,
-        json={"body": comment_body}
+        json={"body": comment_body},
+        timeout=30
     )
 
     if response.status_code != 201:
         logger.warning(
-            f"Failed to add Jira link comment to GitHub issue #{issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to add Jira link comment to GitHub issue #%d in %s: %d %s",
+            issue_number, repo_name, response.status_code, response.text)
         return False
 
-    logger.info(f"Added Jira link comment to GitHub issue #{issue_number} in {repo_name}")
+    logger.info("Added Jira link comment to GitHub issue #%d in %s", issue_number, repo_name)
     return True
 
 
@@ -166,13 +171,14 @@ def check_jira_for_github_issue(github_issue_number, project_key, repo_name):
             "jql": jql,
             "maxResults": 1,
             "fields": ["summary"]
-        }
+        },
+        timeout=30
     )
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to search Jira for GitHub issue #{github_issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to search Jira for GitHub issue #%d in %s: %d %s",
+            github_issue_number, repo_name, response.status_code, response.text)
         return False
 
     results = response.json()
@@ -182,8 +188,8 @@ def check_jira_for_github_issue(github_issue_number, project_key, repo_name):
 def get_master_component_for_repo(repo_name):
     component_key = REPO_TO_MASTER_COMPONENT.get(repo_name)
     if not component_key:
-        logger.error(f"No master component mapping found for repository: {repo_name}")
-        raise Exception(f"Master component mapping missing for repository: {repo_name}")
+        logger.error("No master component mapping found for repository: %s", repo_name)
+        raise ValueError(f"Master component mapping missing for repository: {repo_name}")
 
     return component_key
 
@@ -211,21 +217,21 @@ def bulk_import_to_jira(issues, repo_name):
         issue_number = issue.get("number")
 
         if "pull_request" in issue:
-            logger.info(f"Skipping PR #{issue_number} in {repo_name}")
+            logger.info("Skipping PR #%d in %s", issue_number, repo_name)
             continue
 
         if not has_no_labels(issue):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - has labels (not bulk)")
+            logger.info("Skipping issue #%d in %s - has labels (not bulk)", issue_number, repo_name)
             skipped_imports += 1
             continue
 
         if is_issue_already_imported(issue):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - already imported")
+            logger.info("Skipping issue #%d in %s - already imported", issue_number, repo_name)
             skipped_imports += 1
             continue
 
         if check_jira_for_github_issue(issue_number, PROJECT_KEY, repo_name):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - found in Jira")
+            logger.info("Skipping issue #%d in %s - found in Jira", issue_number, repo_name)
             add_imported_label(issue_number, repo_name)
             skipped_imports += 1
             continue
@@ -272,24 +278,28 @@ def bulk_import_to_jira(issues, repo_name):
 
         issue_data["fields"]["labels"] = ["bulk-import", "github-import", repo_name]
 
-        logger.info(f"Creating Jira issue for GitHub Issue #{issue_number} from {repo_name}: {issue['title']}")
+        logger.info("Creating Jira issue for GitHub Issue #%d from %s: %s",
+                   issue_number, repo_name, issue['title'])
 
         response = requests.post(
             f"{JIRA_URL}/rest/api/2/issue",
             json=issue_data,
-            headers=JIRA_HEADERS
+            headers=JIRA_HEADERS,
+            timeout=30
         )
 
         if response.status_code == 201:
             jira_issue_key = response.json()["key"]
-            logger.info(f"Successfully created Jira issue: {jira_issue_key} for GitHub Issue #{issue_number}")
+            logger.info("Successfully created Jira issue: %s for GitHub Issue #%d",
+                       jira_issue_key, issue_number)
 
             add_jira_link_to_github_issue(issue_number, jira_issue_key, repo_name)
             add_imported_label(issue_number, repo_name)
 
             successful_imports += 1
         else:
-            logger.error(f"Failed to create Jira issue for #{issue_number}: {response.status_code} {response.text}")
+            logger.error("Failed to create Jira issue for #%d: %d %s",
+                        issue_number, response.status_code, response.text)
             failed_imports += 1
 
         time.sleep(0.5)
@@ -307,7 +317,7 @@ def check_environment_variables():
         missing_vars.append("JIRA_TOKEN_SANDBOX")
 
     if missing_vars:
-        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Missing required environment variables: %s", ', '.join(missing_vars))
         return False
 
     logger.info("Environment variables: OK")
@@ -324,46 +334,46 @@ def main():
 
     try:
         repositories = REPOSITORIES
-        logger.info(f"Found {len(repositories)} repositories to process")
+        logger.info("Found %d repositories to process", len(repositories))
 
         total_successful = 0
         total_failed = 0
         total_skipped = 0
 
         for repo_name in repositories:
-            logger.info(f"\nProcessing repository: {repo_name}")
+            logger.info("\nProcessing repository: %s", repo_name)
 
             try:
                 issues = export_all_github_issues(repo_name, state="open")
 
                 if not issues:
-                    logger.info(f"No issues found in repository {repo_name}")
+                    logger.info("No issues found in repository %s", repo_name)
                     continue
 
-                logger.info(f"Bulk importing issues with no labels from {repo_name}...")
+                logger.info("Bulk importing issues with no labels from %s...", repo_name)
                 successful, failed, skipped = bulk_import_to_jira(issues, repo_name)
 
-                logger.info(f"Repository {repo_name} completed:")
-                logger.info(f"  Successfully imported: {successful} issues")
-                logger.info(f"  Failed to import: {failed} issues")
-                logger.info(f"  Skipped (has labels or already imported): {skipped} issues")
+                logger.info("Repository %s completed:", repo_name)
+                logger.info("  Successfully imported: %d issues", successful)
+                logger.info("  Failed to import: %d issues", failed)
+                logger.info("  Skipped (has labels or already imported): %d issues", skipped)
 
                 total_successful += successful
                 total_failed += failed
                 total_skipped += skipped
 
-            except Exception as e:
-                logger.error(f"ERROR processing repository {repo_name}: {str(e)}")
+            except (ValueError, requests.RequestException) as e:
+                logger.error("ERROR processing repository %s: %s", repo_name, str(e))
                 continue
 
         logger.info("\nFINAL SUMMARY - Bulk Import Completed:")
-        logger.info(f"  Total repositories processed: {len(repositories)}")
-        logger.info(f"  Total successfully imported: {total_successful} issues")
-        logger.info(f"  Total failed to import: {total_failed} issues")
-        logger.info(f"  Total skipped: {total_skipped} issues")
+        logger.info("  Total repositories processed: %d", len(repositories))
+        logger.info("  Total successfully imported: %d issues", total_successful)
+        logger.info("  Total failed to import: %d issues", total_failed)
+        logger.info("  Total skipped: %d issues", total_skipped)
 
-    except Exception as e:
-        logger.error(f"CRITICAL ERROR: {str(e)}", exc_info=True)
+    except (ValueError, requests.RequestException) as e:
+        logger.error("CRITICAL ERROR: %s", str(e), exc_info=True)
 
 
 if __name__ == "__main__":

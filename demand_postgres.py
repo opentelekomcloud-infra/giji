@@ -1,8 +1,10 @@
-import requests
+"""GitHub to JIRA Issue Importer for DEMAND - DATABASE VERSION"""
+import logging
 import os
 import re
-import logging
+
 import psycopg2
+import requests
 
 GITHUB_ORG = "opentelekomcloud-docs"
 
@@ -69,6 +71,8 @@ HARDCODED_VALUES = {
     "affected_locations": "EU-DE-03 AZ3 (Germany/Biere)"
 }
 
+TIMEOUT_SECONDS = 30
+
 
 def connect_to_database():
     try:
@@ -76,7 +80,7 @@ def connect_to_database():
         logger.info("Successfully connected to database")
         return conn
     except psycopg2.Error as e:
-        logger.error(f"Error connecting to database: {e}")
+        logger.error("Error connecting to database: %s", e)
         raise
 
 
@@ -98,26 +102,25 @@ def get_repositories_from_db():
         results = cur.fetchall()
 
         if not results:
-            logger.warning(f"No repositories found for squads: {TARGET_SQUADS}")
+            logger.warning("No repositories found for squads: %s", TARGET_SQUADS)
             return []
 
         repo_component_mapping = {}
 
         for repository, squad, title in results:
             repositories.append(repository)
-            logger.info(f"Found repository: {repository} (Squad: {squad}, Title: {title})")
+            logger.info("Found repository: %s (Squad: %s, Title: %s)", repository, squad, title)
 
-            # Map repository to component based on existing mapping
             if repository in REPO_TO_MASTER_COMPONENT:
                 repo_component_mapping[repository] = REPO_TO_MASTER_COMPONENT[repository]
             else:
-                logger.warning(f"No master component mapping found for repository: {repository}")
+                logger.warning("No master component mapping found for repository: %s", repository)
 
-        logger.info(f"Found {len(repositories)} repositories from target squads")
+        logger.info("Found %s repositories from target squads", len(repositories))
         return repositories, repo_component_mapping
 
     except psycopg2.Error as e:
-        logger.error(f"Error querying database: {e}")
+        logger.error("Error querying database: %s", e)
         raise
     finally:
         conn.close()
@@ -136,9 +139,8 @@ def is_demand_issue(issue):
 
 
 def get_jira_project_metadata(project_key):
-    logger.info(f"Using minimal JIRA metadata for project: {project_key}")
+    logger.info("Using minimal JIRA metadata for project: %s", project_key)
 
-    # Return minimal metadata - works reliably without network calls
     return {
         'project_key': project_key,
         'issue_types': [{'name': 'Demand', 'id': '11001'}],
@@ -147,19 +149,22 @@ def get_jira_project_metadata(project_key):
 
 
 def export_github_issues(repo_name):
-    logger.info(f"📥 Fetching issues from repository: {repo_name}")
+    logger.info("Fetching issues from repository: %s", repo_name)
 
     response = requests.get(
         f"{GITHUB_API_URL}/repos/{GITHUB_ORG}/{repo_name}/issues",
         params={"state": "open"},
-        headers=GITHUB_HEADERS
+        headers=GITHUB_HEADERS,
+        timeout=TIMEOUT_SECONDS
     )
 
     if response.status_code != 200:
-        raise Exception(f"GitHub API request failed for {repo_name}: {response.status_code} {response.text}")
+        raise requests.RequestException(
+            f"GitHub API request failed for {repo_name}: {response.status_code} {response.text}"
+        )
 
     issues = response.json()
-    logger.info(f"Found {len(issues)} open issues in repository {repo_name}")
+    logger.info("Found %s open issues in repository %s", len(issues), repo_name)
     return issues
 
 
@@ -172,16 +177,18 @@ def add_imported_label(issue_number, repo_name):
     response = requests.post(
         f"{GITHUB_API_URL}/repos/{GITHUB_ORG}/{repo_name}/issues/{issue_number}/labels",
         headers=GITHUB_HEADERS,
-        json={"labels": [IMPORTED_LABEL]}
+        json={"labels": [IMPORTED_LABEL]},
+        timeout=TIMEOUT_SECONDS
     )
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to add 'imported-to-jira' label to issue #{issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to add 'imported-to-jira' label to issue #%s in %s: %s %s",
+            issue_number, repo_name, response.status_code, response.text
+        )
         return False
 
-    logger.info(f"Added 'imported-to-jira' label to issue #{issue_number} in {repo_name}")
+    logger.info("Added 'imported-to-jira' label to issue #%s in %s", issue_number, repo_name)
     return True
 
 
@@ -191,16 +198,18 @@ def add_jira_link_to_github_issue(issue_number, jira_key, repo_name):
     response = requests.post(
         f"{GITHUB_API_URL}/repos/{GITHUB_ORG}/{repo_name}/issues/{issue_number}/comments",
         headers=GITHUB_HEADERS,
-        json={"body": comment_body}
+        json={"body": comment_body},
+        timeout=TIMEOUT_SECONDS
     )
 
     if response.status_code != 201:
         logger.warning(
-            f"Failed to add Jira link comment to GitHub issue #{issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to add Jira link comment to GitHub issue #%s in %s: %s %s",
+            issue_number, repo_name, response.status_code, response.text
+        )
         return False
 
-    logger.info(f"Added Jira link comment to GitHub issue #{issue_number} in {repo_name}")
+    logger.info("Added Jira link comment to GitHub issue #%s in %s", issue_number, repo_name)
     return True
 
 
@@ -214,13 +223,15 @@ def check_jira_for_github_issue(github_issue_number, project_key, repo_name):
             "jql": jql,
             "maxResults": 1,
             "fields": ["summary"]
-        }
+        },
+        timeout=TIMEOUT_SECONDS
     )
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to search Jira for GitHub issue #{github_issue_number} in {repo_name}: {response.status_code}"
-            f" {response.text}")
+            "Failed to search Jira for GitHub issue #%s in %s: %s %s",
+            github_issue_number, repo_name, response.status_code, response.text
+        )
         return False
 
     results = response.json()
@@ -259,14 +270,14 @@ def parse_github_issue_body(issue_body):
 def get_master_component_for_repo(repo_name, repo_component_mapping):
     component_key = repo_component_mapping.get(repo_name)
     if not component_key:
-        logger.warning(f"No master component mapping found for repository: {repo_name}")
+        logger.warning("No master component mapping found for repository: %s", repo_name)
         component_key = list(REPO_TO_MASTER_COMPONENT.values())[0]
-        logger.warning(f"Using default master component: {component_key}")
+        logger.warning("Using default master component: %s", component_key)
 
     return component_key
 
 
-def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
+def import_to_jira(issues, repo_name, repo_component_mapping):
     successful_imports = 0
     failed_imports = 0
     skipped_imports = 0
@@ -285,23 +296,24 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
         issue_number = issue.get("number")
 
         if "pull_request" in issue:
-            logger.info(f"Skipping PR #{issue_number} in {repo_name}")
+            logger.info("Skipping PR #%s in %s", issue_number, repo_name)
             continue
 
         if not is_demand_issue(issue):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - not a demand issue")
+            logger.info("Skipping issue #%s in %s - not a demand issue", issue_number, repo_name)
             skipped_imports += 1
             continue
 
-        logger.info(f"Processing demand issue #{issue_number} from {repo_name} for import to project {PROJECT_KEY}")
+        logger.info("Processing demand issue #%s from %s for import to project %s",
+                   issue_number, repo_name, PROJECT_KEY)
 
         if is_issue_already_imported(issue):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - already imported to Jira")
+            logger.info("Skipping issue #%s in %s - already imported to Jira", issue_number, repo_name)
             skipped_imports += 1
             continue
 
         if check_jira_for_github_issue(issue_number, PROJECT_KEY, repo_name):
-            logger.info(f"Skipping issue #{issue_number} in {repo_name} - found matching issue in Jira")
+            logger.info("Skipping issue #%s in %s - found matching issue in Jira", issue_number, repo_name)
             add_imported_label(issue_number, repo_name)
             skipped_imports += 1
             continue
@@ -310,7 +322,9 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
 
         if not template_fields:
             logger.warning(
-                f"Issue #{issue_number} in {repo_name} does not appear to use the template format. Skipping.")
+                "Issue #%s in %s does not appear to use the template format. Skipping.",
+                issue_number, repo_name
+            )
             skipped_imports += 1
             continue
 
@@ -345,7 +359,7 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
 
         description_with_link = original_description + additional_info + github_link_text
 
-        issue_data['fields']["description"] = description_with_link[:32767]  # Ensure it doesn't exceed Jira limit
+        issue_data['fields']["description"] = description_with_link[:32767]
 
         issue_data["fields"][template_field_map["affected_locations"]] = [
             {"value": HARDCODED_VALUES["affected_locations"]}]
@@ -357,18 +371,22 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
 
         issue_data["fields"]["labels"] = ["demand", "github-import", repo_name]
 
-        logger.info(f"Creating Jira issue for GitHub Issue #{issue_number} from {repo_name}: {issue['title']}")
+        logger.info("Creating Jira issue for GitHub Issue #%s from %s: %s",
+                   issue_number, repo_name, issue['title'])
 
         response = requests.post(
             f"{JIRA_URL}/rest/api/2/issue",
             json=issue_data,
-            headers=JIRA_HEADERS
+            headers=JIRA_HEADERS,
+            timeout=TIMEOUT_SECONDS
         )
 
         if response.status_code == 201:
             jira_issue_key = response.json()["key"]
             logger.info(
-                f"Successfully created Jira issue: {jira_issue_key} for GitHub Issue #{issue_number} from {repo_name}")
+                "Successfully created Jira issue: %s for GitHub Issue #%s from %s",
+                jira_issue_key, issue_number, repo_name
+            )
 
             add_jira_link_to_github_issue(issue_number, jira_issue_key, repo_name)
 
@@ -377,8 +395,9 @@ def import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping):
             successful_imports += 1
         else:
             logger.error(
-                f"Failed to create Jira issue for GitHub Issue #{issue_number} from {repo_name}: {response.status_code}"
-                f" {response.text}")
+                "Failed to create Jira issue for GitHub Issue #%s from %s: %s %s",
+                issue_number, repo_name, response.status_code, response.text
+            )
             failed_imports += 1
 
     return successful_imports, failed_imports, skipped_imports
@@ -399,7 +418,7 @@ def check_environment_variables():
             missing_vars.append(var)
 
     if missing_vars:
-        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Missing required environment variables: %s", ', '.join(missing_vars))
         logger.error("Please set these variables before running the script")
         return False
 
@@ -431,42 +450,42 @@ def main():
         total_skipped = 0
 
         for repo_name in repositories:
-            logger.info(f"Processing repository: {repo_name}")
+            logger.info("Processing repository: %s", repo_name)
             master_component = repo_component_mapping.get(repo_name, 'NOT FOUND')
-            logger.info(f"Master Component: {master_component}")
+            logger.info("Master Component: %s", master_component)
 
             try:
-                logger.info(f"Fetching issues from GitHub repository: {repo_name}...")
+                logger.info("Fetching issues from GitHub repository: %s...", repo_name)
                 issues = export_github_issues(repo_name)
 
                 if not issues:
-                    logger.info(f"No issues found in repository {repo_name}, skipping...")
+                    logger.info("No issues found in repository %s, skipping...", repo_name)
                     continue
 
-                logger.info(f"Importing demand issues from {repo_name} to JIRA...")
-                successful, failed, skipped = import_to_jira(issues, jira_metadata, repo_name, repo_component_mapping)
+                logger.info("Importing demand issues from %s to JIRA...", repo_name)
+                successful, failed, skipped = import_to_jira(issues, repo_name, repo_component_mapping)
 
-                logger.info(f"Repository {repo_name} completed:")
-                logger.info(f"  Successfully imported: {successful} issues")
-                logger.info(f"  Failed to import: {failed} issues")
-                logger.info(f"  Skipped (not demands or already imported): {skipped} issues")
+                logger.info("Repository %s completed:", repo_name)
+                logger.info("  Successfully imported: %s issues", successful)
+                logger.info("  Failed to import: %s issues", failed)
+                logger.info("  Skipped (not demands or already imported): %s issues", skipped)
 
                 total_successful += successful
                 total_failed += failed
                 total_skipped += skipped
 
-            except Exception as e:
-                logger.error(f"ERROR processing repository {repo_name}: {str(e)}")
+            except requests.RequestException as e:
+                logger.error("ERROR processing repository %s: %s", repo_name, str(e))
                 continue
 
         logger.info("FINAL SUMMARY - All repositories processed:")
-        logger.info(f"  Total repositories processed: {len(repositories)}")
-        logger.info(f"  Total successfully imported: {total_successful} issues")
-        logger.info(f"  Total failed to import: {total_failed} issues")
-        logger.info(f"  Total skipped: {total_skipped} issues")
+        logger.info("  Total repositories processed: %s", len(repositories))
+        logger.info("  Total successfully imported: %s issues", total_successful)
+        logger.info("  Total failed to import: %s issues", total_failed)
+        logger.info("  Total skipped: %s issues", total_skipped)
 
-    except Exception as e:
-        logger.error(f"CRITICAL ERROR: {str(e)}", exc_info=True)
+    except psycopg2.Error as e:
+        logger.error("CRITICAL ERROR: %s", str(e), exc_info=True)
 
 
 if __name__ == "__main__":
