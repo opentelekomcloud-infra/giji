@@ -443,7 +443,6 @@ def main():
             return
 
         logger.info("Fetching JIRA metadata...")
-        jira_metadata = get_jira_project_metadata(PROJECT_KEY)
 
         total_successful = 0
         total_failed = 0
