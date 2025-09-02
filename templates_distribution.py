@@ -152,7 +152,8 @@ def create_label_in_repo(repo_name, label_config):
             return True
         else:
             logger.error(
-                f"{repo_name} - error creating label '{label_config['name']}': {error_data.get('message', 'Unknown error')}")
+                f"{repo_name} - error creating label '{label_config['name']}': {error_data.get('message',
+                                                                                               'Unknown error')}")
             return False
     else:
         try:
@@ -264,7 +265,8 @@ def process_repository_templates(repo_name):
             if result.returncode == 0:
                 logger.info(f"Deleted existing local branch {BRANCH_NAME}")
 
-            result = run_git_command(["git", "push", "origin", "--delete", BRANCH_NAME], cwd=repo_path, check=False)
+            result = run_git_command(["git", "push", "origin", "--delete", BRANCH_NAME], cwd=repo_path,
+                                     check=False)
             if result.returncode == 0:
                 logger.info(f"Deleted existing remote branch {BRANCH_NAME}")
 
@@ -425,7 +427,7 @@ def main():
 
             time.sleep(2)
 
-        logger.info(f"FINAL SUMMARY:")
+        logger.info("FINAL SUMMARY:")
         logger.info("=" * 50)
         logger.info(f"  Total repositories found in DB: {total_repos}")
         logger.info(f"  Repositories processed: {processed_repos}")

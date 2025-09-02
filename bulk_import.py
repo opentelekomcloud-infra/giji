@@ -129,7 +129,8 @@ def add_imported_label(issue_number, repo_name):
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to add imported labels to issue #{issue_number} in {repo_name}: {response.status_code} {response.text}")
+            f"Failed to add imported labels to issue #{issue_number} in {repo_name}: {response.status_code}"
+            f" {response.text}")
         return False
 
     logger.info(f"Added {IMPORTED_LABELS} labels to issue #{issue_number} in {repo_name}")
@@ -147,7 +148,8 @@ def add_jira_link_to_github_issue(issue_number, jira_key, repo_name):
 
     if response.status_code != 201:
         logger.warning(
-            f"Failed to add Jira link comment to GitHub issue #{issue_number} in {repo_name}: {response.status_code} {response.text}")
+            f"Failed to add Jira link comment to GitHub issue #{issue_number} in {repo_name}: {response.status_code}"
+            f" {response.text}")
         return False
 
     logger.info(f"Added Jira link comment to GitHub issue #{issue_number} in {repo_name}")
@@ -169,7 +171,8 @@ def check_jira_for_github_issue(github_issue_number, project_key, repo_name):
 
     if response.status_code != 200:
         logger.warning(
-            f"Failed to search Jira for GitHub issue #{github_issue_number} in {repo_name}: {response.status_code} {response.text}")
+            f"Failed to search Jira for GitHub issue #{github_issue_number} in {repo_name}: {response.status_code}"
+            f" {response.text}")
         return False
 
     results = response.json()
@@ -239,7 +242,8 @@ def bulk_import_to_jira(issues, repo_name):
         issue_data["fields"][template_field_map["master_component"]] = [{"key": master_component_key}]
 
         github_issue_url = issue.get('html_url')
-        github_link_text = f"\n\n*Bulk imported from [GitHub Issue #{issue_number}]({github_issue_url}) in repository {repo_name}*"
+        github_link_text = (f"\n\n*Bulk imported from [GitHub Issue #{issue_number}]({github_issue_url}) in repository"
+                            f"{repo_name}*")
 
         issue_body = issue.get("body", "")
         if not issue_body:
