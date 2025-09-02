@@ -278,8 +278,8 @@ def bulk_import_to_jira(issues, repo_name):
 
         issue_data["fields"]["labels"] = ["bulk-import", "github-import", repo_name]
 
-        logger.info("Creating Jira issue for GitHub Issue #%d from %s: %s",
-                   issue_number, repo_name, issue['title'])
+        logger.info(
+            "Creating Jira issue for GitHub Issue #%d from %s: %s",issue_number, repo_name, issue['title'])
 
         response = requests.post(
             f"{JIRA_URL}/rest/api/2/issue",
@@ -290,16 +290,16 @@ def bulk_import_to_jira(issues, repo_name):
 
         if response.status_code == 201:
             jira_issue_key = response.json()["key"]
-            logger.info("Successfully created Jira issue: %s for GitHub Issue #%d",
-                       jira_issue_key, issue_number)
+            logger.info(
+                "Successfully created Jira issue: %s for GitHub Issue #%d",jira_issue_key, issue_number)
 
             add_jira_link_to_github_issue(issue_number, jira_issue_key, repo_name)
             add_imported_label(issue_number, repo_name)
 
             successful_imports += 1
         else:
-            logger.error("Failed to create Jira issue for #%d: %d %s",
-                        issue_number, response.status_code, response.text)
+            logger.error(
+                "Failed create Jira issue for #%d: %d %s",issue_number, response.status_code, response.text)
             failed_imports += 1
 
         time.sleep(0.5)

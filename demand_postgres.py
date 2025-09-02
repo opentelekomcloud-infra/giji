@@ -304,9 +304,6 @@ def import_to_jira(issues, repo_name, repo_component_mapping):
             skipped_imports += 1
             continue
 
-        logger.info("Processing demand issue #%s from %s for import to project %s",
-                   issue_number, repo_name, PROJECT_KEY)
-
         if is_issue_already_imported(issue):
             logger.info("Skipping issue #%s in %s - already imported to Jira", issue_number, repo_name)
             skipped_imports += 1
@@ -371,8 +368,8 @@ def import_to_jira(issues, repo_name, repo_component_mapping):
 
         issue_data["fields"]["labels"] = ["demand", "github-import", repo_name]
 
-        logger.info("Creating Jira issue for GitHub Issue #%s from %s: %s",
-                   issue_number, repo_name, issue['title'])
+        logger.info(
+            "Creating Jira issue for GitHub Issue #%s from %s: %s",issue_number, repo_name, issue['title'])
 
         response = requests.post(
             f"{JIRA_URL}/rest/api/2/issue",

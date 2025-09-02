@@ -250,8 +250,7 @@ def prepare_branch(repo_path, default_branch, branch_name):
     if result.returncode == 0:
         logger.info("Deleted existing local branch %s", branch_name)
 
-    result = run_git_command(["git", "push", "origin", "--delete", branch_name], cwd=repo_path,
-                            check=False)
+    result = run_git_command(["git", "push", "origin", "--delete", branch_name], cwd=repo_path, check=False)
     if result.returncode == 0:
         logger.info("Deleted existing remote branch %s", branch_name)
 
@@ -423,8 +422,7 @@ def main():
             logger.info("=" * 50)
 
             if not check_repository_exists(repo_name):
-                logger.warning("Repository %s not found in organization %s, skipping...",
-                              repo_name, GITHUB_ORG)
+                logger.warning("Repository %s not found in org %s, skipping...",repo_name, GITHUB_ORG)
                 skipped_repos += 1
                 continue
 
