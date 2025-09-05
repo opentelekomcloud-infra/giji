@@ -3,6 +3,7 @@ import logging
 import os
 import time
 
+import psycopg2
 import requests
 
 GITHUB_ORG = "opentelekomcloud-docs"
@@ -35,22 +36,15 @@ IMPORTED_LABELS = ["imported-to-jira", "bulk"]
 PROJECT_KEY = "BM"
 ISSUE_TYPE = "Bug"
 
-REPOSITORIES = [
-    "dedicated-host",
-    "auto-scaling",
-    "elastic-cloud-server",
-    "image-management-service",
-    "bare-metal-server",
-    "relational-database-service",
-    "gaussdb-opengauss",
-    "geminidb",
-    "taurusdb",
-    "gaussdb-mysql",
-    "data-replication-service",
-    "data-admin-service",
-    "distributed-database-middleware",
-    "document-database-service"
-]
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT"),
+    "database": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD")
+}
+
+TARGET_SQUADS = ["Database Squad", "Compute Squad"]
 
 REPO_TO_MASTER_COMPONENT = {
     "dedicated-host": "OCH-1027707",
@@ -76,6 +70,51 @@ HARDCODED_VALUES = {
     "test_category": "QA",
     "affected_locations": "EU-DE-03 AZ3 (Germany/Biere)"
 }
+
+
+def connect_to_database():
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        logger.info("Successfully connected to database")
+        return conn
+    except psycopg2.Error as e:
+        logger.error("Error connecting to database: %s", e)
+        raise
+
+
+def get_repositories_from_db():
+    conn = connect_to_database()
+    repositories = []
+
+    try:
+        cur = conn.cursor()
+
+        query = """
+            SELECT "Repository", "Squad", "Title"
+            FROM repo_title_category
+            WHERE "Squad" IN %s
+            ORDER BY "Squad", "Repository"
+        """
+
+        cur.execute(query, (tuple(TARGET_SQUADS),))
+        results = cur.fetchall()
+
+        if not results:
+            logger.warning("No repositories found for squads: %s", TARGET_SQUADS)
+            return []
+
+        for repository, squad, title in results:
+            repositories.append(repository)
+            logger.info("Found repository: %s (Squad: %s, Title: %s)", repository, squad, title)
+
+        logger.info("Found %s repositories from target squads", len(repositories))
+        return repositories
+
+    except psycopg2.Error as e:
+        logger.error("Error querying database: %s", e)
+        raise
+    finally:
+        conn.close()
 
 
 def export_all_github_issues(repo_name, state="open"):
@@ -316,6 +355,11 @@ def check_environment_variables():
     if not os.getenv("JIRA_TOKEN_SANDBOX"):
         missing_vars.append("JIRA_TOKEN_SANDBOX")
 
+    db_vars = ["DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"]
+    for var in db_vars:
+        if not os.getenv(var):
+            missing_vars.append(var)
+
     if missing_vars:
         logger.error("Missing required environment variables: %s", ', '.join(missing_vars))
         return False
@@ -333,7 +377,13 @@ def main():
         return
 
     try:
-        repositories = REPOSITORIES
+        logger.info("Fetching repositories from database...")
+        repositories = get_repositories_from_db()
+
+        if not repositories:
+            logger.error("No repositories found in database for target squads")
+            return
+
         logger.info("Found %d repositories to process", len(repositories))
 
         total_successful = 0
@@ -372,7 +422,7 @@ def main():
         logger.info("  Total failed to import: %d issues", total_failed)
         logger.info("  Total skipped: %d issues", total_skipped)
 
-    except (ValueError, requests.RequestException) as e:
+    except (ValueError, requests.RequestException, psycopg2.Error) as e:
         logger.error("CRITICAL ERROR: %s", str(e), exc_info=True)
 
 
