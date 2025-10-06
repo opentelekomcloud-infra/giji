@@ -9,7 +9,7 @@ import time
 import psycopg2
 import requests
 
-GITHUB_ORG = "opentelekomcloud-docs"
+GITHUB_ORG = os.getenv("GITHUB_ORG", "opentelekomcloud-docs")
 
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_TOKEN_BOT = os.getenv("GITHUB_BOT_TOKEN")
@@ -53,9 +53,9 @@ LABELS_TO_CREATE = [
 ]
 
 TEMPLATE_FILES = [
-    "bug-report.yml",
-    "demand.yml",
-    "config.yml"
+    "config/bug-report.yml",
+    "config/demand.yml",
+    "config/config.yml"
 ]
 
 TARGET_PATH = ".github/ISSUE_TEMPLATE"
@@ -165,7 +165,7 @@ def create_label_in_repo(repo_name, label_config):
     return False
 
 
-def create_labels_for_repo(repo_name):
+def create_labels_in_repo(repo_name):
     logger.info("Creating labels in %s...", repo_name)
     success_count = 0
 
@@ -428,7 +428,7 @@ def main():
 
             processed_repos += 1
 
-            if create_labels_for_repo(repo_name):
+            if create_labels_in_repo(repo_name):
                 successful_labels += 1
                 logger.info("All labels created successfully in %s", repo_name)
             else:
@@ -441,7 +441,7 @@ def main():
             else:
                 logger.warning("Template PR failed for %s", repo_name)
 
-            time.sleep(2)
+            time.sleep(2) # github API rate limiting protection
 
         logger.info("FINAL SUMMARY:")
         logger.info("=" * 50)

@@ -1,5 +1,45 @@
-GiJi
-============
-************
-Tool for import issues from GitHub to Jira. Contains 2 templates, 1 config file for GitHub and 2 scripts to be runned on
- OTC infra.
+# Giji
+
+Giji is an automated GitHub-to-Jira issue importing tool designed for documentation issue tracking. It monitors GitHub repositories from specific squads and automatically imports both bug reports and feature demands into Jira for centralized tracking and management.
+
+## Overview
+
+The tool operates through scheduled cron jobs that fetch open GitHub issues, filter for relevant content (bug issues with "bug" labels or "[BUG]" prefixes, and demand/feature requests), parse structured issue templates to extract relevant information, and create corresponding Jira tickets with appropriate metadata like master components, affected areas, and priority levels. It also handles bulk importing of unlabeled issues and adds tracking labels to prevent duplicate imports.
+
+The system integrates with Vault for secure credential management, uses PostgreSQL database connections to determine which repositories to monitor based on squad assignments, and maintains audit trails by linking back to original GitHub issues through comments and labels.
+
+## Scripts
+
+### bug_postgres.py
+GitHub to JIRA Issue Importer specifically for bug reports. Fetches open GitHub issues from target repositories, filters for bug-related content (issues with "bug" labels or "[BUG]" prefix in title), parses structured issue templates to extract metadata like user impact and document URLs, and creates corresponding Jira bug tickets with proper component mapping and priority settings.
+
+### bulk_import.py
+Bulk importer for GitHub issues that lack proper labeling. Processes all open issues in target repositories and imports those without any labels into Jira, assuming they are potential bugs that need triage. Adds "bulk-import" and "imported-to-jira" labels to processed issues and creates basic Jira tickets with minimal metadata.
+
+### templates_distribution.py
+Repository setup script that standardizes GitHub repositories by distributing issue templates and creating required labels. Creates standardized bug report and demand templates in each repository's `.github/ISSUE_TEMPLATE/` directory, sets up required labels (demand, bug, bulk, imported-to-jira), and creates pull requests with the new templates for team review.
+
+## Configuration
+
+The tool requires the following environment variables:
+
+- `GITHUB_BOT_TOKEN`: GitHub API token for repository access
+- `JIRA_BOT_TOKEN`: Jira API token for issue creation
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL database connection details
+- `VAULT_ADDR`, `VAULT_TOKEN`: Vault integration for secure credential management
+
+## Database Schema
+
+The system expects a PostgreSQL table `repo_title_category` with columns:
+- `Repository`: Repository name
+- `Squad`: Squad assignment (Database Squad, Compute Squad)
+- `Title`: Repository display title
+
+## Deployment
+
+Giji runs as Kubernetes CronJobs in the target environment:
+- `giji-bug-postgres`: Processes bug reports
+- `giji-bulk-import`: Handles bulk import of unlabeled issues  
+- `giji-demand-postgres`: Processes feature demands
+
+Each job runs on a scheduled basis to ensure continuous synchronization between GitHub issues and Jira tickets.
