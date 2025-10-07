@@ -1,0 +1,16 @@
+LICENSE
+README.md
+setup.py
+src/giji/__init__.py
+src/giji/bug_postgres.py
+src/giji/bulk_import.py
+src/giji/config.py
+src/giji/demand_postgres.py
+src/giji/templates_distribution.py
+src/giji.egg-info/PKG-INFO
+src/giji.egg-info/SOURCES.txt
+src/giji.egg-info/dependency_links.txt
+src/giji.egg-info/entry_points.txt
+src/giji.egg-info/requires.txt
+src/giji.egg-info/top_level.txt
+tests/test_config.py
