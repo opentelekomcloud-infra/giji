@@ -1,0 +1,2 @@
+[console_scripts]
+giji = giji.cli.main:main

@@ -441,7 +441,8 @@ def main():
             else:
                 logger.warning("Template PR failed for %s", repo_name)
 
-            time.sleep(2) # github API rate limiting protection
+            # github API rate limiting protection
+            time.sleep(2)
 
         logger.info("FINAL SUMMARY:")
         logger.info("=" * 50)
