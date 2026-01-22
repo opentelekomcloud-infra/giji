@@ -1,7 +1,38 @@
-.cache/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
 *.swp
 *.swo
+
+# Build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing
+.tox/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+## Local config (secrets)
+#*.pem
+#*.key
+#.env
+#.env.local
+
+# OS
+.DS_Store
+Thumbs.db

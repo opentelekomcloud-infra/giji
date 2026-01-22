@@ -1,11 +1,35 @@
-*.png
-__pycache__/
-*.pyc
-.github/
-*.ini
-*.yaml
-*.yml
-*.md
-README*
+# Git
 .git/
 .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+
+# Testing/Dev
+.tox/
+.pytest_cache/
+.mypy_cache/
+tests/
+tox.ini
+
+# IDE
+.idea/
+.vscode/
+
+# Docs
+*.md
+LICENSE
+
+# Build artifacts
+build/
+dist/
+
+# Local secrets
+*.pem
+*.key
+.env

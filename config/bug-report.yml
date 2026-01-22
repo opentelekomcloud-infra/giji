@@ -32,19 +32,21 @@ body:
     attributes:
       label: Description
       description: Please provide detailed information about the bug
-      placeholder: "Bug detail description
+      placeholder: |
+                    Bug detail description:
                     Describe the bug in detail.
                     
-                    Preconditions
+                    Preconditions:
                     Specific configuration or resource setup needed to reproduce
                     
-                    How to reproduce
+                    How to reproduce:
                     Describe the simplest way to reproduce the scenario.
                     
-                    Result of the issue
+                    Result of the issue:
                     Describe the issue results.
                     
-                    Expected result
+                    Expected result:
+                    Describe what you want to achieve.
 
     validations:
       required: true

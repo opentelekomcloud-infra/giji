@@ -23,7 +23,21 @@ body:
     attributes:
       label: Feature Description
       description: Please provide a clear and detailed description of the feature you're requesting
-      placeholder: "Describe the feature you'd like to see implemented..."
+      placeholder: |
+                    Feature overview:
+                    Provide a high-level description of the requested feature or documentation.
+                    
+                    Business context:
+                    Explain the business need or user problem this addresses.
+                    
+                    Target audience:
+                    Who will use this feature/documentation? (e.g., developers, end users, administrators)
+                    
+                    Success criteria:
+                    What does "done" look like? How will we know this meets the requirements?
+                    
+                    Additional requirements:
+                    Any technical constraints, dependencies, or special considerations.
     validations:
       required: true
 
@@ -37,3 +51,12 @@ body:
         - label: "UMN"
     validations:
       required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here (logs, screenshots, etc.)
+      placeholder: "Logs, error messages, screenshots, environment details..."
+    validations:
+      required: false
