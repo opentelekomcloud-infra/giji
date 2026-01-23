@@ -20,7 +20,8 @@ class EnvVariables:
         "DB_HOST", "DB_PORT", "DB_CSV", "DB_USER", "DB_PASSWORD",
         "GITHUB_TOKEN", "GITHUB_API_URL", "GITHUB_ORGS",
         "JIRA_API_URL", "JIRA_CERT_PATH", "JIRA_KEY_PATH",
-        "BASE_GITEA_URL"
+        "BASE_GITEA_URL", "DEH", "ASG", "ECS", "IMS", "BMS", "RDS", "OPENGAUSS",
+        "GEMINIDB", "MYSQL", "DRS", "DAS", "DDM", "DDS"
     ]
 
     def __init__(self):
@@ -47,6 +48,21 @@ class EnvVariables:
         base_gitea = os.getenv("BASE_GITEA_URL")
         gitea_path = "/repos/infra/otc-metadata-rework/contents/otc_metadata/data/cloud_environments/"
         self.gitea_url_envs = f"{base_gitea}{gitea_path}"
+
+        # Master Components from Vault
+        self.deh = os.getenv("DEH")
+        self.asg = os.getenv("ASG")
+        self.ecs = os.getenv("ECS")
+        self.ims = os.getenv("IMS")
+        self.bms = os.getenv("BMS")
+        self.rds = os.getenv("RDS")
+        self.opengauss = os.getenv("OPENGAUSS")
+        self.geminidb = os.getenv("GEMINIDB")
+        self.mysql = os.getenv("MYSQL")
+        self.drs = os.getenv("DRS")
+        self.das = os.getenv("DAS")
+        self.ddm = os.getenv("DDM")
+        self.dds = os.getenv("DDS")
 
         self.check_env_variables()
 
