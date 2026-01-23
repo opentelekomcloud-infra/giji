@@ -5,7 +5,7 @@ import time
 
 import psycopg2
 
-from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient, Timer
+from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 from config import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
@@ -165,15 +165,20 @@ def parse_github_issue_body(issue_body):
 
     fields = {}
 
-    summary_match = re.search(r'### Summary\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    summary_match = re.search(
+        r'### Summary\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
     if summary_match:
         fields['summary'] = summary_match.group(1).strip()
 
-    feature_description_match = re.search(r'### Feature Description\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    feature_description_match = re.search(
+        r'### Feature Description\s*\n\s*([\s\S]*?)(?:\n\s*###|$)',
+        issue_body, re.DOTALL)
     if feature_description_match:
         fields['feature_description'] = feature_description_match.group(1).strip()
 
-    doc_type_match = re.search(r'### Documents Requested\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    doc_type_match = re.search(
+        r'### Documents Requested\s*\n\s*([\s\S]*?)(?:\n\s*###|$)',
+        issue_body, re.DOTALL)
     if doc_type_match:
         doc_type_block = doc_type_match.group(1)
         doc_types = []
@@ -184,7 +189,9 @@ def parse_github_issue_body(issue_body):
                     doc_types.append(doc_type.group(1).strip())
         fields['doc_type'] = doc_types
 
-    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    additional_context_match = re.search(
+        r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)',
+        issue_body, re.DOTALL)
     if additional_context_match:
         fields['additional_context'] = additional_context_match.group(1).strip()
 
@@ -301,7 +308,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"Dear customer, this issue has been reported, ticket {jira_key}."
+            comment_body = f"This issue has been imported to Jira: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, [IMPORTED_LABEL])
 
@@ -351,12 +358,14 @@ def main():
                     total_skipped += skipped
 
                 except Exception as e:
-                    logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
+                    logger.error(
+                        "Error processing %s/%s: %s", github_org, repo_name, str(e))
                     continue
 
         logger.info("=" * 80)
-        logger.info("SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
-                   total_successful, total_failed, total_skipped)
+        logger.info(
+            "SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
+            total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
     except psycopg2.Error as e:

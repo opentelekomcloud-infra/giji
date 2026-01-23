@@ -9,7 +9,6 @@ import time
 
 import psycopg2
 import requests
-import json
 import yaml
 
 
@@ -46,7 +45,8 @@ class EnvVariables:
 
         # Gitea for affected locations
         base_gitea = os.getenv("BASE_GITEA_URL")
-        self.gitea_url_envs = f"{base_gitea}/repos/infra/otc-metadata-rework/contents/otc_metadata/data/cloud_environments/"
+        gitea_path = "/repos/infra/otc-metadata-rework/contents/otc_metadata/data/cloud_environments/"
+        self.gitea_url_envs = f"{base_gitea}{gitea_path}"
 
         self.check_env_variables()
 

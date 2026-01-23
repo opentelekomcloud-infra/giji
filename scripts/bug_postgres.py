@@ -5,7 +5,7 @@ import time
 
 import psycopg2
 
-from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient, Timer
+from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 from config import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
@@ -193,11 +193,13 @@ def parse_github_issue_body(issue_body):
     if url_match:
         fields['url'] = url_match.group(1).strip()
 
-    description_match = re.search(r'### Description\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    description_match = re.search(
+        r'### Description\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
     if description_match:
         fields['description'] = description_match.group(1).strip()
 
-    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    additional_context_match = re.search(
+        r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
     if additional_context_match:
         fields['additional_context'] = additional_context_match.group(1).strip()
 
@@ -220,7 +222,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
 
     template_field_map = {
         "master_component": "customfield_17001",
-        "users_impact": "customfield_25500",
+        "users_impact": "customfield_24700",
         "affected_locations": "customfield_10244",
         "test_category": "customfield_20100",
         "priority": "priority",
@@ -317,7 +319,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"Dear customer, this issue has been reported, ticket {jira_key}."
+            comment_body = f"This issue has been imported to Jira: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, [IMPORTED_LABEL])
 
@@ -369,8 +371,9 @@ def main():
                     continue
 
         logger.info("=" * 80)
-        logger.info("SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
-                   total_successful, total_failed, total_skipped)
+        logger.info(
+            "SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
+            total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
     except psycopg2.Error as e:

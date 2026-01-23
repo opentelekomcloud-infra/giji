@@ -1,6 +1,5 @@
 """Tests for demand_postgres.py"""
 
-import pytest
 import sys
 import os
 
@@ -124,7 +123,6 @@ class TestDemandMasterComponent:
     def test_known_repo(self):
         """Known repository returns correct component."""
         from scripts.demand_postgres import get_master_component_for_repo
-        from config import REPO_TO_MASTER_COMPONENT
 
         mapping = {"geminidb": "OCH-1027721"}
         result = get_master_component_for_repo("geminidb", mapping)

@@ -20,7 +20,8 @@ https://docs.otc.t-systems.com/api-ref/ecs/ecs_api_0001.html
 ### Description
 
 Bug detail description:
-The API response shows wrong format for the `status` field. Documentation says it returns a string, but actual API returns an integer.
+The API response shows wrong format for the `status` field.
+Documentation says it returns a string, but actual API returns an integer.
 
 Preconditions:
 User has valid credentials and ECS instance running.

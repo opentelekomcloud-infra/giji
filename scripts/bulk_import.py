@@ -5,7 +5,7 @@ import time
 
 import psycopg2
 
-from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient, Timer
+from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 from config import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
@@ -174,7 +174,7 @@ def bulk_import_to_jira(issues, repo_name, github_org):
         "test_category": "customfield_20100",
         "bug_type": "customfield_20101",
         "affected_areas": "customfield_10218",
-        "users_impact": "customfield_25500"
+        "users_impact": "customfield_24700"
     }
 
     for issue in issues:
@@ -255,7 +255,7 @@ def bulk_import_to_jira(issues, repo_name, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"Dear customer, this issue has been reported, ticket {jira_key}."
+            comment_body = f"This issue has been imported to Jira via bulk import: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, IMPORTED_LABELS)
 
@@ -296,22 +296,26 @@ def main():
                     if not issues:
                         continue
 
-                    successful, failed, skipped = bulk_import_to_jira(issues, repo_name, github_org)
+                    successful, failed, skipped = bulk_import_to_jira(
+                        issues, repo_name, github_org)
 
-                    logger.info("%s/%s: Imported=%d, Failed=%d, Skipped=%d",
-                               github_org, repo_name, successful, failed, skipped)
+                    logger.info(
+                        "%s/%s: Imported=%d, Failed=%d, Skipped=%d",
+                        github_org, repo_name, successful, failed, skipped)
 
                     total_successful += successful
                     total_failed += failed
                     total_skipped += skipped
 
                 except Exception as e:
-                    logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
+                    logger.error(
+                        "Error processing %s/%s: %s", github_org, repo_name, str(e))
                     continue
 
         logger.info("=" * 80)
-        logger.info("FINAL SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
-                   total_successful, total_failed, total_skipped)
+        logger.info(
+            "FINAL SUMMARY: Imported=%d, Failed=%d, Skipped=%d",
+            total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
     except Exception as e:

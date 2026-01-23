@@ -58,7 +58,7 @@ def get_repositories_from_db():
         cur = conn.cursor()
         query = """
             SELECT "Repository", "Squad", "Title"
-            FROM repo_title_category 
+            FROM repo_title_category
             WHERE "Squad" IN %s
             ORDER BY "Squad", "Repository"
         """
@@ -118,14 +118,16 @@ def main():
                     total_successful += 1
                 else:
                     total_failed += 1
-                    logger.warning("%s/%s - %d/%d labels processed",
-                                  github_org, repo_name, repo_success, len(LABELS_TO_CREATE))
+                    logger.warning(
+                        "%s/%s - %d/%d labels processed",
+                        github_org, repo_name, repo_success, len(LABELS_TO_CREATE))
 
         # Summary
         logger.info("=" * 60)
         logger.info("SUMMARY")
         logger.info("=" * 60)
         logger.info("Total organizations: %d", len(env_vars.github_orgs))
+        logger.info("Total repositories per org: %d", len(repositories))
         logger.info("Fully successful: %d", total_successful)
         logger.info("Had issues: %d", total_failed)
 
