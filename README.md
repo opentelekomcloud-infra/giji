@@ -26,7 +26,6 @@ The tool requires the following environment variables:
 - `GITHUB_BOT_TOKEN`: GitHub API token for repository access
 - `JIRA_BOT_TOKEN`: Jira API token for issue creation
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL database connection details
-- `VAULT_ADDR`, `VAULT_TOKEN`: Vault integration for secure credential management
 
 ## Database Schema
 

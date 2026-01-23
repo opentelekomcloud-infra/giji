@@ -1,4 +1,4 @@
-name: Lint Code Base
+name: Lint and Test
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ on:
       - synchronize
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,7 +20,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.x'
+        python-version: '3.12'
 
     - name: Install dependencies
       run: |
@@ -29,3 +29,27 @@ jobs:
 
     - name: Run linters
       run: tox -e lint
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run tests
+      run: pytest tests/ -v --tb=short
+
+    - name: Run tests with coverage
+      run: pytest tests/ --cov=config --cov=scripts --cov-report=term
