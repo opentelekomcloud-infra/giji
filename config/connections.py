@@ -6,13 +6,29 @@ import base64
 import logging
 import os
 import time
+from contextlib import contextmanager
 
 import psycopg2
+import psycopg2.pool
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import yaml
 
 
+# Global session with connection pooling
 session = requests.Session()
+
+# Retry strategy for transient failures
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("http://", adapter)
+session.mount("https://", adapter)
 
 
 class EnvVariables:
@@ -38,7 +54,7 @@ class EnvVariables:
         self.github_fallback_token = os.getenv("GITHUB_FALLBACK_TOKEN")
         self.github_api_url = os.getenv("GITHUB_API_URL")
 
-        # Jira - certificate auth for prod
+        # Jira - certificate auth
         self.jira_api_token = os.getenv("JIRA_TOKEN")
         self.jira_api_url = os.getenv("JIRA_API_URL")
         self.jira_cert_path = os.getenv("JIRA_CERT_PATH")
@@ -78,20 +94,55 @@ class Database:
         self.db_port = env.db_port
         self.db_user = env.db_user
         self.db_password = env.db_password
+        self.logger = logging.getLogger(__name__)
+        self._pool = None
+
+    def get_pool(self, db_name, minconn=1, maxconn=10):
+        """Get or create connection pool for database"""
+        if self._pool is None:
+            try:
+                self._pool = psycopg2.pool.SimpleConnectionPool(
+                    minconn,
+                    maxconn,
+                    host=self.db_host,
+                    port=self.db_port,
+                    dbname=db_name,
+                    user=self.db_user,
+                    password=self.db_password
+                )
+                self.logger.info("Connection pool created for database: %s", db_name)
+            except psycopg2.Error as e:
+                self.logger.error("Failed to create connection pool: %s", str(e))
+                raise
+        return self._pool
+
+    @contextmanager
+    def get_connection(self, db_name):
+        """Context manager for safe connection handling"""
+        pool = self.get_pool(db_name)
+        conn = None
+        try:
+            conn = pool.getconn()
+            yield conn
+        except psycopg2.Error as e:
+            # Sanitize error to avoid password exposure
+            self.logger.error("Database error (credentials hidden): %s", str(e).split('DETAIL')[0])
+            raise
+        finally:
+            if conn:
+                pool.putconn(conn)
 
     def connect_to_db(self, db_name):
-        logging.info("Connecting to Postgres (%s)...", db_name)
-        try:
-            return psycopg2.connect(
-                host=self.db_host,
-                port=self.db_port,
-                dbname=db_name,
-                user=self.db_user,
-                password=self.db_password
-            )
-        except psycopg2.Error as e:
-            logging.error("Connecting to Postgres: an error occurred while trying to connect to the database: %s", e)
-            return None
+        """Legacy method for backwards compatibility - returns connection from pool"""
+        self.logger.info("Getting connection from pool for: %s", db_name)
+        pool = self.get_pool(db_name)
+        return pool.getconn()
+
+    def close_pool(self):
+        """Close all connections in pool"""
+        if self._pool:
+            self._pool.closeall()
+            self.logger.info("Connection pool closed")
 
 
 class GitHubClient:
@@ -104,15 +155,39 @@ class GitHubClient:
             "Accept": "application/vnd.github.v3+json"
         }
         self.logger = logging.getLogger(__name__)
+        self.rate_limit_remaining = None
+        self.rate_limit_reset = None
+
+    def _check_rate_limit(self):
+        """Check GitHub rate limit before making requests"""
+        if self.rate_limit_remaining is not None and self.rate_limit_remaining < 10:
+            reset_time = self.rate_limit_reset or time.time()
+            wait_time = max(0, reset_time - time.time())
+            if wait_time > 0:
+                self.logger.warning("Rate limit low (%d remaining). Waiting %d seconds...",
+                                  self.rate_limit_remaining, int(wait_time))
+                time.sleep(wait_time + 1)
+
+    def _update_rate_limit(self, response):
+        """Update rate limit info from response headers"""
+        try:
+            self.rate_limit_remaining = int(response.headers.get('X-RateLimit-Remaining', 5000))
+            self.rate_limit_reset = int(response.headers.get('X-RateLimit-Reset', time.time() + 3600))
+        except (ValueError, TypeError):
+            pass
 
     def get_issues(self, org, repo_name, state="open"):
         """Fetch issues from GitHub repository."""
-        response = requests.get(
+        self._check_rate_limit()
+
+        response = session.get(
             f"{self.api_url}/repos/{org}/{repo_name}/issues",
             params={"state": state},
             headers=self.headers,
             timeout=self.timeout
         )
+
+        self._update_rate_limit(response)
 
         if response.status_code != 200:
             raise requests.RequestException(
@@ -128,12 +203,16 @@ class GitHubClient:
         page = 1
 
         while True:
-            response = requests.get(
+            self._check_rate_limit()
+
+            response = session.get(
                 f"{self.api_url}/repos/{org}/{repo_name}/issues",
                 params={"state": state, "per_page": per_page, "page": page},
                 headers=self.headers,
                 timeout=self.timeout
             )
+
+            self._update_rate_limit(response)
 
             if response.status_code != 200:
                 raise requests.RequestException(
@@ -154,10 +233,14 @@ class GitHubClient:
 
     def get_issue_comments(self, org, repo_name, issue_number):
         """Fetch comments from GitHub issue."""
+        self._check_rate_limit()
+
         url = f"{self.api_url}/repos/{org}/{repo_name}/issues/{issue_number}/comments"
 
         try:
-            response = requests.get(url, headers=self.headers, timeout=self.timeout)
+            response = session.get(url, headers=self.headers, timeout=self.timeout)
+            self._update_rate_limit(response)
+
             if response.status_code == 200:
                 return response.json()
             return []
@@ -166,12 +249,16 @@ class GitHubClient:
 
     def add_label_to_issue(self, org, repo_name, issue_number, labels):
         """Add labels to GitHub issue."""
-        response = requests.post(
+        self._check_rate_limit()
+
+        response = session.post(
             f"{self.api_url}/repos/{org}/{repo_name}/issues/{issue_number}/labels",
             headers=self.headers,
             json={"labels": labels},
             timeout=self.timeout
         )
+
+        self._update_rate_limit(response)
 
         if response.status_code != 200:
             self.logger.warning(
@@ -183,12 +270,16 @@ class GitHubClient:
 
     def add_comment_to_issue(self, org, repo_name, issue_number, comment_body):
         """Add comment to GitHub issue."""
-        response = requests.post(
+        self._check_rate_limit()
+
+        response = session.post(
             f"{self.api_url}/repos/{org}/{repo_name}/issues/{issue_number}/comments",
             headers=self.headers,
             json={"body": comment_body},
             timeout=self.timeout
         )
+
+        self._update_rate_limit(response)
 
         if response.status_code != 201:
             self.logger.warning(
@@ -200,14 +291,18 @@ class GitHubClient:
 
     def create_label(self, org, repo_name, label_config):
         """Create a label in a GitHub repository."""
+        self._check_rate_limit()
+
         url = f"{self.api_url}/repos/{org}/{repo_name}/labels"
 
-        response = requests.post(
+        response = session.post(
             url,
             json=label_config,
             headers=self.headers,
             timeout=self.timeout
         )
+
+        self._update_rate_limit(response)
 
         if response.status_code == 201:
             return True, "created"
@@ -226,8 +321,12 @@ class GitHubClient:
 
     def check_repo_permissions(self, org, repo_name):
         """Check permissions on specific repository."""
+        self._check_rate_limit()
+
         url = f"{self.api_url}/repos/{org}/{repo_name}"
-        response = requests.get(url, headers=self.headers, timeout=self.timeout)
+        response = session.get(url, headers=self.headers, timeout=self.timeout)
+
+        self._update_rate_limit(response)
 
         if response.status_code == 200:
             repo_data = response.json()
@@ -248,16 +347,17 @@ class JiraClient:
         }
         self.logger = logging.getLogger(__name__)
 
-        # Certificate auth for prod
+        # Certificate auth
         self.cert = None
         if env.jira_cert_path and env.jira_key_path:
             self.cert = (env.jira_cert_path, env.jira_key_path)
+            self.logger.info("Using certificate authentication for Jira")
 
     def search_issues(self, jql, max_results=1, fields=None):
         if fields is None:
             fields = ["summary"]
 
-        response = requests.post(
+        response = session.post(
             f"{self.api_url}/rest/api/2/search",
             headers=self.headers,
             json={
@@ -277,7 +377,7 @@ class JiraClient:
         return response.json()
 
     def create_issue(self, issue_data):
-        response = requests.post(
+        response = session.post(
             f"{self.api_url}/rest/api/2/issue",
             json=issue_data,
             headers=self.headers,
@@ -298,7 +398,7 @@ class JiraClient:
         payload = {"body": comment_text}
 
         try:
-            response = requests.post(
+            response = session.post(
                 url,
                 headers=self.headers,
                 json=payload,
@@ -330,7 +430,7 @@ class GiteaClient:
         """Get decoded content of a file from Gitea."""
         try:
             file_url = f"{self.base_url}/{file_path}"
-            response = requests.get(file_url, timeout=self.timeout)
+            response = session.get(file_url, timeout=self.timeout)
             response.raise_for_status()
 
             file_content_base64 = response.json()['content']
@@ -350,7 +450,7 @@ class GiteaClient:
             else:
                 url = self.base_url
 
-            response = requests.get(url, timeout=self.timeout)
+            response = session.get(url, timeout=self.timeout)
             response.raise_for_status()
 
             return response.json()
