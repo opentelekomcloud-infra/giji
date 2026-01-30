@@ -165,7 +165,7 @@ class GitHubClient:
             wait_time = max(0, reset_time - time.time())
             if wait_time > 0:
                 self.logger.warning("Rate limit low (%d remaining). Waiting %d seconds...",
-                                  self.rate_limit_remaining, int(wait_time))
+                                    self.rate_limit_remaining, int(wait_time))
                 time.sleep(wait_time + 1)
 
     def _update_rate_limit(self, response):
