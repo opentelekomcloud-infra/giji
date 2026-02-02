@@ -317,6 +317,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
         else:
             failed_imports += 1
 
+        # Rate limiting delay to prevent GitHub API throttling
         time.sleep(0.5)
 
     return successful_imports, failed_imports, skipped_imports

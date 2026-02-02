@@ -14,6 +14,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import yaml
+import warnings
 
 
 # Global session with connection pooling
@@ -134,6 +135,11 @@ class Database:
 
     def connect_to_db(self, db_name):
         """Legacy method for backwards compatibility - returns connection from pool"""
+        warnings.warn(
+            "connect_to_db() is deprecated. Use get_connection() context manager instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.logger.info("Getting connection from pool for: %s", db_name)
         pool = self.get_pool(db_name)
         return pool.getconn()
