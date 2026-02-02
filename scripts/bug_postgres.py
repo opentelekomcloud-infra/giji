@@ -3,13 +3,11 @@ import logging
 import os
 import re
 import time
-import warnings
 
 import psycopg2
-import requests
 import yaml
 
-from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient, Timer
+from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -131,7 +129,7 @@ def get_repositories_from_db():
             cur = conn.cursor()
             query = """
                 SELECT "Repository", "Squad", "Title"
-                FROM repo_title_category 
+                FROM repo_title_category
                 WHERE "Squad" IN %s
                 ORDER BY "Squad", "Repository"
             """
@@ -204,7 +202,8 @@ def parse_github_issue_body(issue_body):
     if description_match:
         fields['description'] = description_match.group(1).strip()
 
-    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body,
+                                         re.DOTALL)
     if additional_context_match:
         fields['additional_context'] = additional_context_match.group(1).strip()
 
@@ -366,7 +365,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"This issue has been imported to Jira: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
+            comment_body = (f"Dear customer, this issue has been reported, ticket {jira_key})")
 
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, [IMPORTED_LABEL])
@@ -423,7 +422,7 @@ def main():
 
         logger.info("=" * 80)
         logger.info("SUMMARY: Imported: %s, Failed: %s, Skipped: %s",
-                   total_successful, total_failed, total_skipped)
+                    total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
     except psycopg2.Error as e:
