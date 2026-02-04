@@ -4,8 +4,6 @@ import os
 import re
 import time
 
-import yaml
-
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 from config.constants import REPO_TO_MASTER_COMPONENT
 
@@ -66,7 +64,7 @@ def get_repositories_from_db():
             with conn.cursor() as cur:
                 query = """
                     SELECT "Repository", "Squad", "Title"
-                    FROM repo_title_category 
+                    FROM repo_title_category
                     WHERE "Squad" IN %s
                     ORDER BY "Squad", "Repository"
                 """
@@ -134,7 +132,8 @@ def parse_github_issue_body(issue_body):
     if description_match:
         fields['description'] = description_match.group(1).strip()
 
-    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
+    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)',
+                                         issue_body, re.DOTALL)
     if additional_context_match:
         fields['additional_context'] = additional_context_match.group(1).strip()
 
@@ -286,7 +285,8 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"This issue has been imported to Jira: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
+            comment_body = (f"This issue has been imported to Jira: "
+                            f"[{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})")
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, [IMPORTED_LABEL])
 
