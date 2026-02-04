@@ -4,10 +4,10 @@ import os
 import re
 import time
 
-import psycopg2
 import yaml
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
+from config.constants import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -21,126 +21,62 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Jira configuration
-IMPORTED_LABEL = "imported-to-jira"
+# Configuration from environment variables (Vault)
+IMPORTED_LABEL = os.getenv("IMPORTED_LABEL", "imported-to-jira")
 PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "BM")
-ISSUE_TYPE = "Bug"
+ISSUE_TYPE = os.getenv("JIRA_ISSUE_TYPE", "Bug")
+TARGET_SQUADS = [s.strip() for s in os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")]
 
-# Squad targeting
-TARGET_SQUADS = os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")
-
-REPO_TO_MASTER_COMPONENT = {
-    "dedicated-host": env_vars.deh,
-    "auto-scaling": env_vars.asg,
-    "elastic-cloud-server": env_vars.ecs,
-    "image-management-service": env_vars.ims,
-    "bare-metal-server": env_vars.bms,
-    "relational-database-service": env_vars.rds,
-    "gaussdb-opengauss": env_vars.opengauss,
-    "geminidb": env_vars.geminidb,
-    "gaussdb-mysql": env_vars.mysql,
-    "data-replication-service": env_vars.drs,
-    "data-admin-service": env_vars.das,
-    "distributed-database-middleware": env_vars.ddm,
-    "document-database-service": env_vars.dds
-}
-
-HARDCODED_VALUES = {
-    "bug_type": "Documentation",
-    "affected_areas": "Production",
-    "priority": "Medium"
-}
-
-FALLBACK_AFFECTED_LOCATIONS = {
-    "opentelekomcloud-docs": [
-        "EU-DE-01 AZ1 (Germany/Biere)",
-        "EU-DE-02 AZ2 (Germany/Magdeburg)",
-        "EU-DE-03 AZ3 (Germany/Biere)"
-    ],
-    "opentelekomcloud-docs-swiss": [
-        "EU-CH2-01 SwissCloud AZ1 (Switzerland/Zollikofen)",
-        "EU-CH2-02 SwissCloud AZ2 (Switzerland/Bern)",
-        "EU-CH2-03 SwissCloud AZ3 (Switzerland/Zollikofen)"
-    ]
-}
-
+# Jira custom field IDs - these are stable and rarely change
 TEST_CATEGORY_IDS = {
     "QA": "17600",
     "UAT": "17601",
     "Security": "17602"
 }
 
-
-def get_affected_locations_from_gitea(org_name):
-    """Fetch affected locations from Gitea metadata"""
-    try:
-        files = gitea_client.list_directory()
-
-        if not files:
-            return None
-
-        yaml_files = [item for item in files if item['type'] == 'file' and item['name'].endswith('.yaml')]
-
-        for file_info in yaml_files:
-            file_content = gitea_client.get_file_content(file_info['name'])
-
-            if not file_content:
-                continue
-
-            data = yaml.safe_load(file_content)
-
-            if data.get('public_org') == org_name:
-                affected_locations = data.get('affected_locations', [])
-                if affected_locations:
-                    return affected_locations
-                else:
-                    return None
-
-        return None
-
-    except Exception as e:
-        logger.error("Error fetching from Gitea: %s", e)
-        return None
+# Static values - these rarely change and don't need Vault
+HARDCODED_VALUES = {
+    "bug_type": "Documentation",
+    "affected_areas": "Production",
+    "priority": "Medium"
+}
 
 
 def get_affected_locations_for_org(org):
-    """Get affected locations with Gitea fallback"""
-    locations = get_affected_locations_from_gitea(org)
-
-    if locations:
-        return locations
-
-    locations = FALLBACK_AFFECTED_LOCATIONS.get(org)
+    """Get affected locations from Gitea - no fallback, fail if unavailable."""
+    locations = gitea_client.get_affected_locations_for_org(org)
 
     if not locations:
-        return ["EU-DE-03 AZ3 (Germany/Biere)"]
+        raise RuntimeError(
+            f"Failed to fetch affected locations for org '{org}' from Gitea. "
+            "Gitea is required for operation - please ensure it is accessible."
+        )
 
     return locations
 
 
 def get_repositories_from_db():
-    """Get repositories from target squads"""
+    """Get repositories from target squads using context manager."""
     repositories = []
     repo_component_mapping = {}
 
-    # Use context manager for safe database connection handling
+    # Context manager ensures proper connection cleanup
     with database.get_connection(env_vars.db_csv) as conn:
         try:
-            cur = conn.cursor()
-            query = """
-                SELECT "Repository", "Squad", "Title"
-                FROM repo_title_category
-                WHERE "Squad" IN %s
-                ORDER BY "Squad", "Repository"
-            """
-            cur.execute(query, (tuple(TARGET_SQUADS),))
-            results = cur.fetchall()
+            with conn.cursor() as cur:
+                query = """
+                    SELECT "Repository", "Squad", "Title"
+                    FROM repo_title_category 
+                    WHERE "Squad" IN %s
+                    ORDER BY "Squad", "Repository"
+                """
+                cur.execute(query, (tuple(TARGET_SQUADS),))
+                results = cur.fetchall()
 
-            for repository, squad, title in results:
-                repositories.append(repository)
-
-                if repository in REPO_TO_MASTER_COMPONENT:
-                    repo_component_mapping[repository] = REPO_TO_MASTER_COMPONENT[repository]
+                for repository, squad, title in results:
+                    repositories.append(repository)
+                    if repository in REPO_TO_MASTER_COMPONENT:
+                        repo_component_mapping[repository] = REPO_TO_MASTER_COMPONENT[repository]
 
         except Exception as e:
             logger.error("Error querying database: %s", e)
@@ -150,12 +86,11 @@ def get_repositories_from_db():
 
 
 def determine_test_category_from_url(url):
-    """Determine test category from Document URL"""
+    """Determine test category from Document URL."""
     if not url:
         return "QA"
 
     url_lower = url.lower()
-
     if "/umn/" in url_lower or url_lower.strip() == "umn":
         return "UAT"
     elif "/api-ref/" in url_lower:
@@ -165,26 +100,23 @@ def determine_test_category_from_url(url):
 
 
 def is_bug_issue(issue):
-    """Check if issue is a bug"""
+    """Check if issue is a bug."""
     labels = [label["name"].lower() for label in issue.get("labels", [])]
     if "bug" in labels:
         return True
 
     title = issue.get("title", "").upper()
-    if title.startswith("[BUG]"):
-        return True
-
-    return False
+    return title.startswith("[BUG]")
 
 
 def is_issue_already_imported(issue):
-    """Check if issue has imported label"""
+    """Check if issue has imported label."""
     labels = [label["name"] for label in issue.get("labels", [])]
     return IMPORTED_LABEL in labels
 
 
 def parse_github_issue_body(issue_body):
-    """Parse GitHub issue template fields"""
+    """Parse GitHub issue template fields."""
     if not issue_body:
         return {}
 
@@ -202,8 +134,7 @@ def parse_github_issue_body(issue_body):
     if description_match:
         fields['description'] = description_match.group(1).strip()
 
-    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body,
-                                         re.DOTALL)
+    additional_context_match = re.search(r'### Additional Context\s*\n\s*([\s\S]*?)(?:\n\s*###|$)', issue_body, re.DOTALL)
     if additional_context_match:
         fields['additional_context'] = additional_context_match.group(1).strip()
 
@@ -211,7 +142,7 @@ def parse_github_issue_body(issue_body):
 
 
 def convert_github_images_to_jira(text):
-    """Convert GitHub image tags to Jira format"""
+    """Convert GitHub image tags to Jira format."""
     if not text:
         return text
 
@@ -225,9 +156,8 @@ def convert_github_images_to_jira(text):
 
 
 def sync_comments_to_jira(jira_issue_key, org, repo, issue_number):
-    """Sync GitHub comments to Jira"""
+    """Sync GitHub comments to Jira."""
     comments = github_client.get_issue_comments(org, repo, issue_number)
-
     if not comments:
         return 0
 
@@ -253,7 +183,7 @@ def sync_comments_to_jira(jira_issue_key, org, repo, issue_number):
 
 
 def get_master_component_for_repo(repo_name, repo_component_mapping):
-    """Get master component key for repository"""
+    """Get master component key for repository."""
     component_key = repo_component_mapping.get(repo_name)
     if not component_key:
         raise ValueError(f"Master component mapping missing for repository: {repo_name}")
@@ -261,7 +191,7 @@ def get_master_component_for_repo(repo_name, repo_component_mapping):
 
 
 def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
-    """Import GitHub issues to Jira"""
+    """Import GitHub issues to Jira."""
     successful_imports = 0
     failed_imports = 0
     skipped_imports = 0
@@ -296,7 +226,6 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             continue
 
         template_fields = parse_github_issue_body(issue.get("body", ""))
-
         if not template_fields:
             skipped_imports += 1
             continue
@@ -316,12 +245,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
         github_link_text = (f"\n\n*Imported from [GitHub Issue #{issue_number}]({github_issue_url}) "
                             f"in repository {repo_name}*")
 
-        original_description = ""
-        if 'description' in template_fields:
-            original_description = template_fields['description']
-        else:
-            original_description = issue.get("body", "")
-
+        original_description = template_fields.get('description', issue.get("body", ""))
         original_description = convert_github_images_to_jira(original_description)
 
         additional_info = ""
@@ -337,10 +261,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
 
         document_url = template_fields.get('url', '')
         test_category = determine_test_category_from_url(document_url)
-
-        issue_data["fields"][template_field_map["test_category"]] = {
-            "id": TEST_CATEGORY_IDS[test_category]
-        }
+        issue_data["fields"][template_field_map["test_category"]] = {"id": TEST_CATEGORY_IDS[test_category]}
 
         affected_locations = get_affected_locations_for_org(github_org)
         issue_data["fields"][template_field_map["affected_locations"]] = [
@@ -365,8 +286,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = (f"Dear customer, this issue has been reported, ticket {jira_key})")
-
+            comment_body = f"This issue has been imported to Jira: [{jira_key}]({env_vars.jira_api_url}/browse/{jira_key})"
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, [IMPORTED_LABEL])
 
@@ -422,11 +342,14 @@ def main():
 
         logger.info("=" * 80)
         logger.info("SUMMARY: Imported: %s, Failed: %s, Skipped: %s",
-                    total_successful, total_failed, total_skipped)
+                   total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
-    except psycopg2.Error as e:
-        logger.error("Database error: %s", str(e))
+    except Exception as e:
+        logger.error("Critical error: %s", str(e), exc_info=True)
+    finally:
+        # Ensure connection pool is properly closed
+        database.close_pool()
 
 
 if __name__ == "__main__":

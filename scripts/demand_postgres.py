@@ -1,12 +1,11 @@
 """GitHub to JIRA Issue Importer for DEMAND"""
 import logging
+import os
 import re
 import time
 
-import psycopg2
-
-from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config import REPO_TO_MASTER_COMPONENT
+from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
+from config.constants import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -20,11 +19,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-IMPORTED_LABEL = "imported-to-jira"
-PROJECT_KEY = "OTCPR"
-ISSUE_TYPE_ID = "11001"
-TARGET_SQUADS = ["Database Squad", "Compute Squad"]
+# Configuration from environment variables (Vault)
+IMPORTED_LABEL = os.getenv("IMPORTED_LABEL", "imported-to-jira")
+PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY_DEMAND", "OTCPR")
+ISSUE_TYPE_ID = os.getenv("JIRA_ISSUE_TYPE_ID_DEMAND", "11001")
+TARGET_SQUADS = [s.strip() for s in os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")]
 
+# Static values - these rarely change and don't need Vault
 HARDCODED_VALUES = {
     "estimated_effort": "15104",
     "pays_into": "15204",
@@ -32,68 +33,52 @@ HARDCODED_VALUES = {
     "tier": "14637"
 }
 
-FALLBACK_AFFECTED_LOCATIONS = {
-    "opentelekomcloud-docs": [
-        "EU-DE-01 AZ1 (Germany/Biere)",
-        "EU-DE-02 AZ2 (Germany/Magdeburg)",
-        "EU-DE-03 AZ3 (Germany/Biere)"
-    ],
-    "opentelekomcloud-docs-swiss": [
-        "EU-CH2-01 SwissCloud AZ1 (Switzerland/Zollikofen)",
-        "EU-CH2-02 SwissCloud AZ2 (Switzerland/Bern)",
-        "EU-CH2-03 SwissCloud AZ3 (Switzerland/Zollikofen)"
-    ]
-}
-
 
 def get_affected_locations_for_org(org_name):
-    """Get affected locations from Gitea with fallback."""
+    """Get affected locations from Gitea - no fallback, fail if unavailable."""
     locations = gitea_client.get_affected_locations_for_org(org_name)
 
-    if locations:
-        return locations
+    if not locations:
+        raise RuntimeError(
+            f"Failed to fetch affected locations for org '{org_name}' from Gitea. "
+            "Gitea is required for operation - please ensure it is accessible."
+        )
 
-    # Fallback
-    locations = FALLBACK_AFFECTED_LOCATIONS.get(org_name)
-    if locations:
-        return locations
-
-    return ["EU-DE-03 AZ3 (Germany/Biere)"]
+    return locations
 
 
 def get_repositories_from_db():
-    """Get repositories from target squads in database."""
-    conn = database.connect_to_db(env_vars.db_csv)
+    """Get repositories from target squads using context manager."""
     repositories = []
     repo_component_mapping = {}
 
-    try:
-        cur = conn.cursor()
-        query = """
-            SELECT "Repository", "Squad", "Title"
-            FROM repo_title_category
-            WHERE "Squad" IN %s
-            ORDER BY "Squad", "Repository"
-        """
+    # Context manager ensures proper connection cleanup
+    with database.get_connection(env_vars.db_csv) as conn:
+        try:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT "Repository", "Squad", "Title"
+                    FROM repo_title_category
+                    WHERE "Squad" IN %s
+                    ORDER BY "Squad", "Repository"
+                """
 
-        cur.execute(query, (tuple(TARGET_SQUADS),))
-        results = cur.fetchall()
+                cur.execute(query, (tuple(TARGET_SQUADS),))
+                results = cur.fetchall()
 
-        if not results:
-            return [], {}
+                if not results:
+                    return [], {}
 
-        for repository, squad, title in results:
-            repositories.append(repository)
-            if repository in REPO_TO_MASTER_COMPONENT:
-                repo_component_mapping[repository] = REPO_TO_MASTER_COMPONENT[repository]
+                for repository, squad, title in results:
+                    repositories.append(repository)
+                    if repository in REPO_TO_MASTER_COMPONENT:
+                        repo_component_mapping[repository] = REPO_TO_MASTER_COMPONENT[repository]
 
-        return repositories, repo_component_mapping
+        except Exception as e:
+            logger.error("Error querying database: %s", e)
+            raise
 
-    except psycopg2.Error as e:
-        logger.error("Database query error: %s", e)
-        raise
-    finally:
-        conn.close()
+    return repositories, repo_component_mapping
 
 
 def convert_github_images_to_jira(text):
@@ -134,6 +119,7 @@ def sync_comments_to_jira(jira_issue_key, github_org, repo_name, issue_number):
         if jira_client.add_comment(jira_issue_key, comment_text):
             synced += 1
 
+        # Rate limiting delay to prevent GitHub API throttling
         time.sleep(0.5)
 
     return synced
@@ -146,10 +132,7 @@ def is_demand_issue(issue):
         return True
 
     title = issue.get("title", "").upper()
-    if title.startswith("[DEMAND]"):
-        return True
-
-    return False
+    return title.startswith("[DEMAND]")
 
 
 def is_issue_already_imported(issue):
@@ -285,7 +268,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
         description_with_link = original_description + additional_info + github_link_text
         issue_data['fields']["description"] = description_with_link[:32767]
 
-        # Affected locations from Gitea
+        # Affected locations from Gitea - will raise if unavailable
         affected_locations = get_affected_locations_for_org(github_org)
         issue_data["fields"][template_field_map["affected_locations"]] = [
             {"value": location} for location in affected_locations
@@ -370,8 +353,11 @@ def main():
             total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
-    except psycopg2.Error as e:
-        logger.error("Database error: %s", str(e))
+    except Exception as e:
+        logger.error("Critical error: %s", str(e), exc_info=True)
+    finally:
+        # Ensure connection pool is properly closed
+        database.close_pool()
 
 
 if __name__ == "__main__":

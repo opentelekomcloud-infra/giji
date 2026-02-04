@@ -81,6 +81,12 @@ class EnvVariables:
         self.ddm = os.getenv("DDM")
         self.dds = os.getenv("DDS")
 
+        # Config vars from Vault
+        self.jira_project_key = os.getenv("JIRA_PROJECT_KEY")
+        self.target_squads = os.getenv("TARGET_SQUADS")
+        self.imported_label = os.getenv("IMPORTED_LABEL")
+        self.jira_issue_type = os.getenv("JIRA_ISSUE_TYPE")
+
         self.check_env_variables()
 
     def check_env_variables(self):

@@ -1,12 +1,11 @@
 """Module for bulk importing GitHub issues to Jira."""
 import logging
+import os
 import re
 import time
 
-import psycopg2
-
-from config import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config import REPO_TO_MASTER_COMPONENT
+from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
+from config.constants import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -20,11 +19,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Configuration from environment variables (Vault)
 IMPORTED_LABELS = ["imported-to-jira", "bulk"]
-PROJECT_KEY = "BM"
-ISSUE_TYPE = "Bug"
-TARGET_SQUADS = ["Database Squad", "Compute Squad"]
+PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "BM")
+ISSUE_TYPE = os.getenv("JIRA_ISSUE_TYPE", "Bug")
+TARGET_SQUADS = [s.strip() for s in os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")]
 
+# Jira custom field IDs - these are stable and rarely change
+TEST_CATEGORY_IDS = {
+    "QA": "17600",
+    "UAT": "17601",
+    "Security": "17602"
+}
+
+# Static values - these rarely change and don't need Vault
 HARDCODED_VALUES = {
     "bug_type": "Documentation",
     "affected_areas": "Production",
@@ -32,71 +40,49 @@ HARDCODED_VALUES = {
     "test_category": "QA"
 }
 
-FALLBACK_AFFECTED_LOCATIONS = {
-    "opentelekomcloud-docs": [
-        "EU-DE-01 AZ1 (Germany/Biere)",
-        "EU-DE-02 AZ2 (Germany/Magdeburg)",
-        "EU-DE-03 AZ3 (Germany/Biere)"
-    ],
-    "opentelekomcloud-docs-swiss": [
-        "EU-CH2-01 SwissCloud AZ1 (Switzerland/Zollikofen)",
-        "EU-CH2-02 SwissCloud AZ2 (Switzerland/Bern)",
-        "EU-CH2-03 SwissCloud AZ3 (Switzerland/Zollikofen)"
-    ]
-}
-
-TEST_CATEGORY_IDS = {
-    "QA": "17600",
-    "UAT": "17601",
-    "Security": "17602"
-}
-
 
 def get_affected_locations_for_org(org_name):
-    """Get affected locations from Gitea with fallback."""
+    """Get affected locations from Gitea - no fallback, fail if unavailable."""
     locations = gitea_client.get_affected_locations_for_org(org_name)
 
-    if locations:
-        return locations
+    if not locations:
+        raise RuntimeError(
+            f"Failed to fetch affected locations for org '{org_name}' from Gitea. "
+            "Gitea is required for operation - please ensure it is accessible."
+        )
 
-    # Fallback
-    locations = FALLBACK_AFFECTED_LOCATIONS.get(org_name)
-    if locations:
-        return locations
-
-    return ["EU-DE-03 AZ3 (Germany/Biere)"]
+    return locations
 
 
 def get_repositories_from_db():
-    """Get repositories from target squads in database."""
-    conn = database.connect_to_db(env_vars.db_csv)
+    """Get repositories from target squads using context manager."""
     repositories = []
 
-    try:
-        cur = conn.cursor()
-        query = """
-            SELECT "Repository", "Squad", "Title"
-            FROM repo_title_category
-            WHERE "Squad" IN %s
-            ORDER BY "Squad", "Repository"
-        """
+    # Context manager ensures proper connection cleanup
+    with database.get_connection(env_vars.db_csv) as conn:
+        try:
+            with conn.cursor() as cur:
+                query = """
+                    SELECT "Repository", "Squad", "Title"
+                    FROM repo_title_category
+                    WHERE "Squad" IN %s
+                    ORDER BY "Squad", "Repository"
+                """
 
-        cur.execute(query, (tuple(TARGET_SQUADS),))
-        results = cur.fetchall()
+                cur.execute(query, (tuple(TARGET_SQUADS),))
+                results = cur.fetchall()
 
-        if not results:
-            return []
+                if not results:
+                    return []
 
-        for repository, squad, title in results:
-            repositories.append(repository)
+                for repository, squad, title in results:
+                    repositories.append(repository)
 
-        return repositories
+        except Exception as e:
+            logger.error("Error querying database: %s", e)
+            raise
 
-    except psycopg2.Error as e:
-        logger.error("Database query error: %s", e)
-        raise
-    finally:
-        conn.close()
+    return repositories
 
 
 def convert_github_images_to_jira(text):
@@ -137,7 +123,8 @@ def sync_comments_to_jira(jira_issue_key, github_org, repo_name, issue_number):
         if jira_client.add_comment(jira_issue_key, comment_text):
             synced += 1
 
-        time.sleep(1)
+        # Rate limiting delay to prevent GitHub API throttling
+        time.sleep(0.5)
 
     return synced
 
@@ -225,7 +212,7 @@ def bulk_import_to_jira(issues, repo_name, github_org):
             "id": TEST_CATEGORY_IDS[HARDCODED_VALUES["test_category"]]
         }
 
-        # Affected locations from Gitea
+        # Affected locations from Gitea - will raise if unavailable
         affected_locations = get_affected_locations_for_org(github_org)
         issue_data["fields"][template_field_map["affected_locations"]] = [
             {"value": location} for location in affected_locations
@@ -322,6 +309,9 @@ def main():
 
     except Exception as e:
         logger.error("CRITICAL ERROR: %s", str(e), exc_info=True)
+    finally:
+        # Ensure connection pool is properly closed
+        database.close_pool()
 
 
 if __name__ == "__main__":
