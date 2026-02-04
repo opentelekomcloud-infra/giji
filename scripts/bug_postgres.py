@@ -5,7 +5,7 @@ import re
 import time
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config.constants import REPO_TO_MASTER_COMPONENT
+from config.connections import REPO_TO_MASTER_COMPONENT
 
 env_vars = EnvVariables()
 database = Database(env_vars)
