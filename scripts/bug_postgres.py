@@ -342,7 +342,7 @@ def main():
 
         logger.info("=" * 80)
         logger.info("SUMMARY: Imported: %s, Failed: %s, Skipped: %s",
-                   total_successful, total_failed, total_skipped)
+                    total_successful, total_failed, total_skipped)
         logger.info("=" * 80)
 
     except Exception as e:
