@@ -5,7 +5,7 @@ import re
 import time
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config.constants import REPO_TO_MASTER_COMPONENT
+from config.constants import REPO_TO_MASTER_COMPONENT, TEST_CATEGORY_IDS, template_field_map
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -25,12 +25,6 @@ PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "BM")
 ISSUE_TYPE = os.getenv("JIRA_ISSUE_TYPE", "Bug")
 TARGET_SQUADS = [s.strip() for s in os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")]
 
-# Jira custom field IDs - these are stable and rarely change
-TEST_CATEGORY_IDS = {
-    "QA": "17600",
-    "UAT": "17601",
-    "Security": "17602"
-}
 
 # Static values - these rarely change and don't need Vault
 HARDCODED_VALUES = {
@@ -194,16 +188,6 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
     successful_imports = 0
     failed_imports = 0
     skipped_imports = 0
-
-    template_field_map = {
-        "master_component": "customfield_17001",
-        "users_impact": "customfield_24700",
-        "affected_locations": "customfield_10244",
-        "test_category": "customfield_20100",
-        "priority": "priority",
-        "bug_type": "customfield_20101",
-        "affected_areas": "customfield_10218",
-    }
 
     for issue in issues:
         issue_number = issue.get("number")

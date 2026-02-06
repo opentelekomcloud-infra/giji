@@ -5,7 +5,7 @@ import re
 import time
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config.constants import REPO_TO_MASTER_COMPONENT
+from config.constants import REPO_TO_MASTER_COMPONENT, template_field_map
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -195,16 +195,6 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
     successful_imports = 0
     failed_imports = 0
     skipped_imports = 0
-
-    template_field_map = {
-        "master_component": "customfield_17001",
-        "affected_locations": "customfield_10244",
-        "priority": "priority",
-        "estimated_effort": "customfield_15700",
-        "tier": "customfield_15237",
-        "pays_into": "customfield_16000",
-        "description": "description"
-    }
 
     for issue in issues:
         issue_number = issue.get("number")
