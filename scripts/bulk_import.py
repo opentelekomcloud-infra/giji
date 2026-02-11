@@ -227,7 +227,7 @@ def bulk_import_to_jira(issues, repo_name, github_org):
             if comment_count > 0:
                 logger.info("Synced %d comments to %s", comment_count, jira_key)
 
-            comment_body = f"This issue has been imported to Jira: {jira_key})"
+            comment_body = f"This issue has been imported to Jira: {jira_key}"
             github_client.add_comment_to_issue(github_org, repo_name, issue_number, comment_body)
             github_client.add_label_to_issue(github_org, repo_name, issue_number, IMPORTED_LABELS)
 
