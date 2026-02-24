@@ -1,6 +1,8 @@
 """Constants and mappings - loaded from Vault environment variables"""
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 
 # Master component mapping - values loaded from Vault via environment variables
 REPO_TO_MASTER_COMPONENT = {
@@ -40,3 +42,8 @@ template_field_map = {
     "pays_into": os.getenv("pays_into"),
     "description": os.getenv("description")
 }
+
+null_fields = [key for key, val in template_field_map.items() if val is None]
+if null_fields:
+    logger.error(f"These fields are None (not set in environment): {null_fields}")
+    raise ValueError(f"Missing env vars for fields: {null_fields}")
