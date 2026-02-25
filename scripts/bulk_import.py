@@ -3,9 +3,10 @@ import logging
 import os
 import re
 import time
+import requests
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config.constants import REPO_TO_MASTER_COMPONENT, TEST_CATEGORY_IDS, template_field_map
+from config.constants import REPO_TO_MASTER_COMPONENT, template_field_map
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -194,7 +195,7 @@ def bulk_import_to_jira(issues, repo_name, github_org):
         issue_data['fields']["description"] = description_with_link[:32767]
 
         issue_data["fields"][template_field_map["test_category"]] = {
-            "id": TEST_CATEGORY_IDS[HARDCODED_VALUES["test_category"]]
+            "value": HARDCODED_VALUES["test_category"]
         }
 
         # Affected locations from Gitea - will raise if unavailable
@@ -221,6 +222,8 @@ def bulk_import_to_jira(issues, repo_name, github_org):
 
         if jira_issue:
             jira_key = jira_issue["key"]
+            jira_url = f"{env_vars.jira_api_url}/browse/{jira_key}"
+            logger.info("Successfully imported issue #%s -> %s", issue_number, jira_url)
 
             # Sync comments
             comment_count = sync_comments_to_jira(jira_key, github_org, repo_name, issue_number)
@@ -280,9 +283,14 @@ def main():
                     total_failed += failed
                     total_skipped += skipped
 
+                except requests.RequestException as e:
+                    if "404" in str(e):
+                        logger.info("Skipped - repo doesn't exist in org %s: %s", github_org, repo_name)
+                    else:
+                        logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
+                    continue
                 except Exception as e:
-                    logger.error(
-                        "Error processing %s/%s: %s", github_org, repo_name, str(e))
+                    logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
                     continue
 
         logger.info("=" * 80)

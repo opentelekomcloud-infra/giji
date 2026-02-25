@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+import requests
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
 from config.constants import REPO_TO_MASTER_COMPONENT, template_field_map
@@ -264,6 +265,8 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
 
         if jira_issue:
             jira_key = jira_issue["key"]
+            jira_url = f"{env_vars.jira_api_url}/browse/{jira_key}"
+            logger.info("Successfully imported issue #%s -> %s", issue_number, jira_url)
 
             comment_count = sync_comments_to_jira(jira_key, github_org, repo_name, issue_number)
             if comment_count > 0:
@@ -319,6 +322,12 @@ def main():
                     total_failed += failed
                     total_skipped += skipped
 
+                except requests.RequestException as e:
+                    if "404" in str(e):
+                        logger.info("Skipped - repo doesn't exist in org %s: %s", github_org, repo_name)
+                    else:
+                        logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
+                    continue
                 except Exception as e:
                     logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
                     continue
