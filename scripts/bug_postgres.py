@@ -332,7 +332,6 @@ def main():
                     logger.error("Error processing %s/%s: %s", github_org, repo_name, str(e))
                     continue
 
-
         logger.info("=" * 80)
         logger.info("SUMMARY: Imported: %s, Failed: %s, Skipped: %s",
                     total_successful, total_failed, total_skipped)
