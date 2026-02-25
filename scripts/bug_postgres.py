@@ -5,7 +5,7 @@ import re
 import time
 
 from config.connections import Database, EnvVariables, GitHubClient, JiraClient, GiteaClient
-from config.constants import REPO_TO_MASTER_COMPONENT, TEST_CATEGORY_IDS, template_field_map
+from config.constants import REPO_TO_MASTER_COMPONENT, template_field_map
 
 env_vars = EnvVariables()
 database = Database(env_vars)
@@ -244,7 +244,7 @@ def import_to_jira(issues, repo_name, repo_component_mapping, github_org):
 
         document_url = template_fields.get('url', '')
         test_category = determine_test_category_from_url(document_url)
-        issue_data["fields"][template_field_map["test_category"]] = {"id": TEST_CATEGORY_IDS[test_category]}
+        issue_data["fields"][template_field_map["test_category"]] = {"value": test_category}
 
         affected_locations = get_affected_locations_for_org(github_org)
         issue_data["fields"][template_field_map["affected_locations"]] = [
