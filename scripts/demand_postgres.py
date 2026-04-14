@@ -65,7 +65,9 @@ def get_repositories_from_db():
                 """
 
                 cur.execute(query, (tuple(TARGET_SQUADS),))
+                logger.info("TARGET_SQUADS: %r", TARGET_SQUADS)
                 results = cur.fetchall()
+                logger.info("Rows returned: %d", len(results))
 
                 if not results:
                     return [], {}

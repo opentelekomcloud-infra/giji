@@ -64,7 +64,9 @@ def get_repositories_from_db():
                     ORDER BY "Squad", "Repository"
                 """
                 cur.execute(query, (tuple(TARGET_SQUADS),))
+                logger.info("TARGET_SQUADS: %r", TARGET_SQUADS)
                 results = cur.fetchall()
+                logger.info("Rows returned: %d", len(results))
 
                 for repository, squad, title in results:
                     repositories.append(repository)
