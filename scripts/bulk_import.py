@@ -304,7 +304,7 @@ def main():
     except Exception as e:
         logger.error("CRITICAL ERROR: %s", str(e), exc_info=True)
     finally:
-        # Ensure connection pool is properly closed
+        # If pool is properly closed
         database.close_pool()
 
 
