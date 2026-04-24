@@ -27,7 +27,6 @@ ISSUE_TYPE = os.getenv("JIRA_ISSUE_TYPE", "Bug")
 TARGET_SQUADS = [s.strip() for s in os.getenv("TARGET_SQUADS", "Database Squad,Compute Squad").split(",")]
 
 
-# Static values - these rarely change and don't need Vault
 HARDCODED_VALUES = {
     "bug_type": "Documentation",
     "affected_areas": "Production",
