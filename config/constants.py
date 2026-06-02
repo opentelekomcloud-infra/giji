@@ -72,7 +72,12 @@ REPO_TO_MASTER_COMPONENT = {
     "resource-formation-service": os.getenv("RFS"),
     "simple-message-notification": os.getenv("SMN"),
     "tag-management-service": os.getenv("TMS"),
-    "taurusdb": os.getenv("TAURUSDB")
+    "taurusdb": os.getenv("TAURUSDB"),
+    "web-application-firewall-dedicated": os.getenv("WAFD"),
+    "api-usage": os.getenv("API_USAGE"),
+    "ubiquitous-cloud-native-service": os.getenv("UCNS"),
+    "object-storage-service-3rd-party": os.getenv("OBS3RD"),
+    "price-calculator": os.getenv("CALCULATOR")
 }
 
 # Test category IDS - values loaded from Vault
