@@ -37,7 +37,7 @@ class EnvVariables:
         "DB_HOST", "DB_PORT", "DB_CSV", "DB_USER", "DB_PASSWORD",
         "GITHUB_TOKEN", "GITHUB_API_URL", "GITHUB_ORGS",
         "JIRA_API_URL", "JIRA_CERT_PATH", "JIRA_KEY_PATH",
-        "BASE_GITEA_URL"
+        "BASE_GITEA_URL", "GITEA_TOKEN"
     ]
 
     def __init__(self):
@@ -64,6 +64,7 @@ class EnvVariables:
         base_gitea = os.getenv("BASE_GITEA_URL")
         gitea_path = "/repos/infra/otc-metadata-rework/contents/otc_metadata/data/cloud_environments/"
         self.gitea_url_envs = f"{base_gitea}{gitea_path}"
+        self.gitea_token = os.getenv("GITEA_TOKEN")
 
         self.check_env_variables()
 
@@ -415,14 +416,16 @@ class GiteaClient:
         self.base_url = env.gitea_url_envs
         self.timeout = timeout
         self.logger = logging.getLogger(__name__)
+        self.headers = {}
+        if hasattr(env, 'gitea_token') and env.gitea_token:
+            self.headers = {"Authorization": f"token {env.gitea_token}"}
 
     def get_file_content(self, file_path):
         """Get decoded content of a file from Gitea."""
         try:
             file_url = f"{self.base_url}/{file_path}"
-            response = session.get(file_url, timeout=self.timeout)
+            response = session.get(file_url, headers=self.headers, timeout=self.timeout)
             response.raise_for_status()
-
             file_content_base64 = response.json()['content']
             file_content = base64.b64decode(file_content_base64).decode('utf-8')
 
@@ -440,7 +443,7 @@ class GiteaClient:
             else:
                 url = self.base_url
 
-            response = session.get(url, timeout=self.timeout)
+            response = session.get(url, headers=self.headers, timeout=self.timeout)
             response.raise_for_status()
 
             return response.json()
