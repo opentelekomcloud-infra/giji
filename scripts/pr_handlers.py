@@ -60,7 +60,7 @@ def on_pr_opened(pr, org, repo, conn, cur):
     logger.info("Triggered NoTestNoDoc for %s", jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
-        jira_key, lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-'))
+        jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     urls = {}
     for change_key in changes:
@@ -90,7 +90,7 @@ def on_pr_approved(pr_url, jira_key, conn, cur):
     logger.info("on_pr_approved: %s -> %s", pr_url, jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
-        jira_key, lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-'))
+        jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     for change_key in changes:
         guide_url = giji.jira_client.get_change_guide_url(change_key)
@@ -100,7 +100,7 @@ def on_pr_approved(pr_url, jira_key, conn, cur):
 
         prepare = giji.jira_client.wait_for_linked_issues(
             change_key,
-            lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('PREPARE:'))
+            lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith('PREPARE:'))
         for t in prepare:
             giji.close_squad_task(t)
             logger.info("Closed PREPARE %s", t)
@@ -121,12 +121,12 @@ def on_pr_merged(pr_url, jira_key, conn, cur):
     logger.info("on_pr_merged: %s -> %s", pr_url, jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
-        jira_key, lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-'))
+        jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     for change_key in changes:
         execute = giji.jira_client.wait_for_linked_issues(
             change_key,
-            lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('EXECUTE:'))
+            lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith('EXECUTE:'))
         for t in execute:
             giji.close_squad_task(t)
             logger.info("Closed EXECUTE %s", t)
@@ -145,7 +145,7 @@ def on_pr_closed(pr_url, jira_key, conn, cur):
     logger.info("on_pr_closed (unmerged): %s -> %s", pr_url, jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
-        jira_key, lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-'))
+        jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     for change_key in changes:
         transitions = giji.jira_client.get_transitions(change_key)

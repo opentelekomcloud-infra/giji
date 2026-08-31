@@ -359,7 +359,7 @@ def process_change(change_key, fields):
 
     squad_tasks = jira_client.wait_for_linked_issues(
         change_key,
-        lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('PREPARE:')
+        lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith('PREPARE:')
     )
     for task_key in squad_tasks:
         result['squad_url'] = f"{env_vars.jira_api_url}/browse/{task_key}"
@@ -371,7 +371,7 @@ def process_change(change_key, fields):
         logger.info("Change %s approved %d time(s)", change_key, approved)
         execute_tasks = jira_client.wait_for_linked_issues(
             change_key,
-            lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('EXECUTE:')
+            lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith('EXECUTE:')
         )
         for task_key in execute_tasks:
             if close_squad_task(task_key):
@@ -401,7 +401,7 @@ def process_demand(jira_key, fields):
 
     changes = jira_client.wait_for_linked_issues(
         jira_key,
-        lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-')
+        lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-')
     )
 
     for change_key in changes:
