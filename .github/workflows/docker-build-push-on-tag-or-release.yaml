@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - '*'
-    branches:
-      - quay_creds
   release:
     types: [published]
 
