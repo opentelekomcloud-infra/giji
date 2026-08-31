@@ -221,8 +221,12 @@ def save_pr_to_db(conn_csv, cur_csv, pr_url, pr_state, pr_merged, demand_url,
                 "Github PR Merged" = EXCLUDED."Github PR Merged",
                 "Jira Demand Key" = COALESCE(EXCLUDED."Jira Demand Key", giji_prs."Jira Demand Key"),
                 "Jira Demand URL" = COALESCE(EXCLUDED."Jira Demand URL", giji_prs."Jira Demand URL"),
-                "Jira Change URL PreProd" = COALESCE(EXCLUDED."Jira Change URL PreProd", giji_prs."Jira Change URL PreProd"),
-                "Changeguide URL PreProd" = COALESCE(EXCLUDED."Changeguide URL PreProd", giji_prs."Changeguide URL PreProd"),
+                "Jira Change URL PreProd" = COALESCE(
+                    EXCLUDED."Jira Change URL PreProd",
+                    giji_prs."Jira Change URL PreProd"),
+                "Changeguide URL PreProd" = COALESCE(
+                    EXCLUDED."Changeguide URL PreProd",
+                    giji_prs."Changeguide URL PreProd"),
                 "Jira Change URL Prod" = COALESCE(EXCLUDED."Jira Change URL Prod", giji_prs."Jira Change URL Prod"),
                 "Changeguide URL Prod" = COALESCE(EXCLUDED."Changeguide URL Prod", giji_prs."Changeguide URL Prod"),
                 "updated_at" = NOW()
@@ -355,7 +359,7 @@ def process_change(change_key, fields):
 
     squad_tasks = jira_client.wait_for_linked_issues(
         change_key,
-        lambda l: not l['key'].startswith('OTCPR-') and l['summary'].startswith('PREPARE:')
+        lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('PREPARE:')
     )
     for task_key in squad_tasks:
         result['squad_url'] = f"{env_vars.jira_api_url}/browse/{task_key}"
@@ -367,7 +371,7 @@ def process_change(change_key, fields):
         logger.info("Change %s approved %d time(s)", change_key, approved)
         execute_tasks = jira_client.wait_for_linked_issues(
             change_key,
-            lambda l: not l['key'].startswith('OTCPR-') and l['summary'].startswith('EXECUTE:')
+            lambda link: not link['key'].startswith('OTCPR-') and l['summary'].startswith('EXECUTE:')
         )
         for task_key in execute_tasks:
             if close_squad_task(task_key):
@@ -397,7 +401,7 @@ def process_demand(jira_key, fields):
 
     changes = jira_client.wait_for_linked_issues(
         jira_key,
-        lambda l: l['issuetype'] == 'Change' and l['key'].startswith('OTCPR-')
+        lambda link: link['issuetype'] == 'Change' and l['key'].startswith('OTCPR-')
     )
 
     for change_key in changes:
