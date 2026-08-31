@@ -121,7 +121,7 @@ def is_pr_already_imported(org, repo, pr_number):
     url = f"{GITHUB_API_URL}/repos/{org}/{repo}/issues/{pr_number}/labels"
     response = requests.get(url, headers=GITHUB_HEADERS, timeout=30)
     if response.status_code == 200:
-        labels = [l["name"] for l in response.json()]
+        labels = [link["name"] for link in response.json()]
         return IMPORTED_LABEL in labels
     return False
 
