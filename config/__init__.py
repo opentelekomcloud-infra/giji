@@ -1,4 +1,4 @@
-from config.connections import ( # noqa: F401
+from config.connections import (  # noqa: F401
     EnvVariables,
     JiraClient,
     GiteaClient,
