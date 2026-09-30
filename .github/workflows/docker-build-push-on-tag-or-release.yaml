@@ -4,14 +4,15 @@ on:
   push:
     tags:
       - '*'
-    branches:
-      - quay_creds
   release:
     types: [published]
 
 env:
   ORG: opentelekomcloud
   PROJECT: giji
+
+permissions:
+  contents: read
 
 jobs:
   push_if_tag:
@@ -25,7 +26,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            "quay.io/${{ env.ORG }}/${{ env.PROJECT }}"
+            "${{ secrets.SWR_URL }}/${{ env.ORG }}/${{ env.PROJECT }}"
           tags: |
             type=schedule
             type=ref,event=branch
@@ -38,12 +39,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Container Registry
+      - name: Login to SWR Registry
         uses: docker/login-action@v3
         with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+          registry: ${{ secrets.SWR_URL }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -52,3 +53,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           push: true
+          # provenance diasbles attestation manifest generation, if true - Invalid image, fail to parse 'manifest.json'
+          provenance: false

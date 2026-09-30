@@ -77,7 +77,11 @@ REPO_TO_MASTER_COMPONENT = {
     "api-usage": os.getenv("API_USAGE"),
     "ubiquitous-cloud-native-service": os.getenv("UCNS"),
     "object-storage-service-3rd-party": os.getenv("OBS3RD"),
-    "price-calculator": os.getenv("CALCULATOR")
+    "price-calculator": os.getenv("CALCULATOR"),
+    "system-config": os.getenv("SC"),
+    "stackmon-config": os.getenv("SMC"),
+    "gitstyring": os.getenv("GS"),
+    "zuul-infra": os.getenv("ZI")
 }
 
 # Test category IDS - values loaded from Vault
@@ -99,5 +103,11 @@ template_field_map = {
     "estimated_effort": os.getenv("estimated_effort"),
     "tier": os.getenv("tier"),
     "pays_into": os.getenv("pays_into"),
-    "description": os.getenv("description")
+    "description": os.getenv("description"),
+    "impact": os.getenv("impact"),
+    "justification": os.getenv("justification"),
+    "rollback": os.getenv("rollback"),
+    "technical_risk": os.getenv("technical_risk"),
+    "risk_implementation": os.getenv("risk_implementation"),
+    "risk_omission": os.getenv("risk_omission")
 }
