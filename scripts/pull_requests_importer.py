@@ -62,7 +62,7 @@ FALLBACK_AFFECTED_LOCATIONS = [
 ]
 
 GITHUB_HEADERS = {
-    "Authorization": f"token {env_vars.github_token}",
+    "Authorization": f"token {env_vars.github_token_infra or env_vars.github_token}",
     "Accept": "application/vnd.github.v3+json"
 }
 

@@ -47,9 +47,12 @@ class EnvVariables:
         self.db_user = os.getenv("DB_USER")
         self.db_password = os.getenv("DB_PASSWORD")
 
-        # GitHub — single org, multiple repos
-        self.github_org = os.getenv("GITHUB_ORG")
-        self.github_token = os.getenv("GITHUB_TOKEN")
+        # GitHub: docs orgs (old scripts) and the infra org (PR scanner) use different orgs and tokens
+        github_orgs_str = os.getenv("GITHUB_ORGS", "opentelekomcloud-docs")
+        self.github_orgs = [org.strip() for org in github_orgs_str.split(",") if org.strip()]
+        self.github_token = os.getenv("GITHUB_TOKEN")                    # docs, old scripts
+        self.github_org = os.getenv("GITHUB_ORG")                        # infra, PR scanner
+        self.github_token_infra = os.getenv("GITHUB_TOKEN_INFRA")        # infra, PR scanner
         self.github_fallback_token = os.getenv("GITHUB_FALLBACK_TOKEN")
         self.github_api_url = os.getenv("GITHUB_API_URL", "https://api.github.com")
         repos_str = os.getenv("MONITORED_REPOS", "")
