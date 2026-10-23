@@ -19,10 +19,13 @@ def get_all_prs(org, repo):
     for state in ('open', 'closed'):
         url = f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls"
         response = requests.get(url, headers=giji.GITHUB_HEADERS,
-                                params={"state": state, "per_page": 30, "sort": "updated"},
+                                params={"state": state, "per_page": 30, "sort": "updated", "direction": "desc"},
                                 timeout=30)
         if response.status_code == 200:
             prs.extend(response.json())
+        else:
+            logger.error("GitHub API %s for %s/%s (state=%s): %s",
+                         response.status_code, org, repo, state, response.text[:200])
     return prs
 
 
@@ -39,12 +42,16 @@ def get_db_state(cur, pr_url):
 
 def scan_repo(org, repo, conn, cur):
     logger.info("Scanning %s/%s", org, repo)
-    for pr in get_all_prs(org, repo):
+    prs = get_all_prs(org, repo)
+    logger.info("Got %d PRs from GitHub API", len(prs))
+    for pr in prs:
         pr_url = pr['html_url']
         pr_state = pr['state']
         pr_merged = bool(pr.get('merged_at'))
 
         db = get_db_state(cur, pr_url)
+        logger.debug("PR %s: state=%s draft=%s in_db=%s",
+                     pr_url, pr_state, pr.get('draft'), db is not None)
 
         if db is None:
             if pr_state == 'open' and not pr.get('draft'):
@@ -54,6 +61,7 @@ def scan_repo(org, repo, conn, cur):
 
         jira_key = db['jira_key']
         if not jira_key:
+            logger.warning("PR %s is in DB but has no Jira Demand Key, skipping", pr_url)
             continue
 
         if pr_merged and not db['merged']:
@@ -70,7 +78,27 @@ def scan_repo(org, repo, conn, cur):
             review_state = get_pr_review_state(pr)
             if review_state == 'approved' and db['review_state'] != 'approved':
                 logger.info("PR approved: %s", pr_url)
-                on_pr_approved(pr_url, jira_key, conn, cur)
+                on_pr_approved(pr_url, jira_key, conn, cur, pr)
+
+    seen = {pr['html_url'] for pr in prs}
+    cur.execute(
+        'SELECT "Github PR URL", "Jira Demand Key" FROM giji_prs WHERE "Github Repo" = %s AND "Github PR State" = %s',
+        (repo, 'open'))
+    for pr_url, jira_key in cur.fetchall():
+        if pr_url in seen or not jira_key:
+            continue
+        number = pr_url.rstrip('/').split('/')[-1]
+        r = requests.get(f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls/{number}", headers=giji.GITHUB_HEADERS,
+                         timeout=30)
+        if r.status_code != 200:
+            continue
+        pr = r.json()
+        if pr.get('merged_at'):
+            logger.info("PR merged (late catch): %s", pr_url)
+            on_pr_merged(pr_url, jira_key, conn, cur)
+        elif pr['state'] == 'closed':
+            logger.info("PR closed without merge (late catch): %s", pr_url)
+            on_pr_closed(pr_url, jira_key, conn, cur)
 
         time.sleep(0.5)
 
@@ -80,6 +108,14 @@ def main():
     logger.info("PR Scanner started — org: %s, repos: %s",
                 giji.env_vars.github_org, giji.env_vars.monitored_repos)
     logger.info("=" * 60)
+
+    me = requests.get(f"{giji.GITHUB_API_URL}/user", headers=giji.GITHUB_HEADERS, timeout=30)
+    logger.info("GitHub token acts as: %s (expires %s)",
+                me.json().get("login") if me.status_code == 200 else me.status_code,
+                me.headers.get("github-authentication-token-expiration"))
+
+    for c in (giji.jira_client, giji.jira_creator, giji.jira_approver1, giji.jira_approver2):
+        logger.info("Jira client '%s' acts as: %s", c.label, c.whoami())
 
     conn = giji.database.connect_to_db(giji.env_vars.db_csv)
     cur = conn.cursor()

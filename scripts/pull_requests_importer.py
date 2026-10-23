@@ -16,8 +16,10 @@ jira_client = JiraClient(env_vars)
 gitea_client = GiteaClient(env_vars)
 confluence_client = ConfluenceClient(env_vars)
 
-jira_approver1 = JiraClient(env_vars, token=env_vars.jira_approver1_token)
-jira_approver2 = JiraClient(env_vars, token=env_vars.jira_approver2_token)
+jira_client    = JiraClient(env_vars, label="main")
+jira_creator   = JiraClient(env_vars, token=os.getenv("JIRA_API_TOKEN"), label="creator")
+jira_approver1 = JiraClient(env_vars, token=env_vars.jira_approver1_token, label="approver1")
+jira_approver2 = JiraClient(env_vars, token=env_vars.jira_approver2_token, label="approver2")
 
 GITHUB_ORG = env_vars.github_org
 GITHUB_API_URL = env_vars.github_api_url
@@ -63,6 +65,41 @@ GITHUB_HEADERS = {
     "Authorization": f"token {env_vars.github_token}",
     "Accept": "application/vnd.github.v3+json"
 }
+
+
+REQUIRED_SECTIONS = {
+    "summary": "Summary",
+    "description": "Description",
+    "risk_implementation": "Risk of Implementation",
+    "risk_omission": "Risk of Omission",
+}
+TEMPLATE_LABEL = "giji-template-missing"
+
+
+def missing_sections(fields, min_len=3):
+    return [title for key, title in REQUIRED_SECTIONS.items()
+            if len((fields.get(key) or "").strip()) < min_len]
+
+
+def pr_has_label(org, repo, pr_number, label):
+    url = f"{GITHUB_API_URL}/repos/{org}/{repo}/issues/{pr_number}/labels"
+    response = requests.get(url, headers=GITHUB_HEADERS, timeout=30)
+    return response.status_code == 200 and label in [x["name"] for x in response.json()]
+
+
+def notify_incomplete_template(org, repo, pr_number, missing):
+    if pr_has_label(org, repo, pr_number, TEMPLATE_LABEL):
+        return  # author was already told, don't repeat on every scan
+    if add_label_to_pr(org, repo, pr_number, [TEMPLATE_LABEL]):
+        add_comment_to_pr(
+            org, repo, pr_number,
+            "Giji could not import this PR into Jira: these PR template sections are empty: "
+            + ", ".join(missing) + ". Please fill them in the PR description, the import will be retried automatically.")
+
+
+def remove_label_from_pr(org, repo, pr_number, label):
+    url = f"{GITHUB_API_URL}/repos/{org}/{repo}/issues/{pr_number}/labels/{label}"
+    requests.delete(url, headers=GITHUB_HEADERS, timeout=30)
 
 
 def get_master_component(repo_name):
@@ -130,14 +167,24 @@ def add_label_to_pr(org, repo, pr_number, labels):
     """Add labels to PR"""
     url = f"{GITHUB_API_URL}/repos/{org}/{repo}/issues/{pr_number}/labels"
     response = requests.post(url, headers=GITHUB_HEADERS, json={"labels": labels}, timeout=30)
-    return response.status_code == 200
+    if response.status_code != 200:
+        logger.error("Failed to add labels %s to %s/%s#%s: %s %s",
+                     labels, org, repo, pr_number, response.status_code, response.text[:200])
+        return False
+    logger.info("Labeled %s/%s#%s with %s", org, repo, pr_number, labels)
+    return True
 
 
 def add_comment_to_pr(org, repo, pr_number, comment_body):
     """Add comment to PR"""
     url = f"{GITHUB_API_URL}/repos/{org}/{repo}/issues/{pr_number}/comments"
     response = requests.post(url, headers=GITHUB_HEADERS, json={"body": comment_body}, timeout=30)
-    return response.status_code == 201
+    if response.status_code != 201:
+        logger.error("Failed to comment on %s/%s#%s: %s %s",
+                     org, repo, pr_number, response.status_code, response.text[:200])
+        return False
+    logger.info("Commented on %s/%s#%s", org, repo, pr_number)
+    return True
 
 
 def parse_pr_body(body):
@@ -299,7 +346,13 @@ def fill_risk_assessment(change_key, fields):
         payload[RISK_FIELD_MAP["risk_implementation"]] = fields['risk_implementation']
     if fields.get('risk_omission'):
         payload[RISK_FIELD_MAP["risk_omission"]] = fields['risk_omission']
-    return jira_client.update_issue_fields(change_key, payload)
+
+    editable = jira_client.get_editable_fields(change_key)
+    skipped = [k for k in payload if k not in editable]
+    if skipped:
+        logger.warning("%s: not editable for %s, skipped: %s", change_key, jira_client.actor, skipped)
+    payload = {k: v for k, v in payload.items() if k in editable}
+    return bool(payload) and jira_client.update_issue_fields(change_key, payload)
 
 
 def approve_change(change_key, max_attempts=6, delay=10):

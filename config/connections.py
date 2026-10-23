@@ -329,9 +329,11 @@ class GitHubClient:
 
 
 class JiraClient:
-    def __init__(self, env, timeout=60, token=None):
+    def __init__(self, env, timeout=60, token=None, label="jira"):
         self.api_url = env.jira_api_url
         self.token = token or env.jira_api_token
+        self.label = label
+        self._whoami = None
         self.timeout = timeout
         self.headers = {
             "Authorization": f"Bearer {self.token}",
@@ -345,6 +347,24 @@ class JiraClient:
         if env.jira_cert_path and env.jira_key_path:
             self.cert = (env.jira_cert_path, env.jira_key_path)
             self.logger.info("Using certificate authentication for Jira")
+
+    def whoami(self):
+        """Jira username this client's token belongs to (resolved once, cached)."""
+        if self._whoami is None:
+            try:
+                response = session.get(f"{self.api_url}/rest/api/2/myself", headers=self.headers,
+                                       timeout=self.timeout, cert=self.cert, verify=True)
+                if response.status_code == 200:
+                    self._whoami = response.json().get("name", "?")
+                else:
+                    self._whoami = f"<myself HTTP {response.status_code}>"
+            except Exception as e:
+                self._whoami = f"<myself failed: {e}>"
+        return self._whoami
+
+    @property
+    def actor(self):
+        return f"{self.label}/{self.whoami()}"
 
     def search_issues(self, jql, max_results=1, fields=None):
         if fields is None:
@@ -370,6 +390,7 @@ class JiraClient:
         return response.json()
 
     def create_issue(self, issue_data):
+        fields = issue_data.get("fields", {})
         response = session.post(
             f"{self.api_url}/rest/api/2/issue",
             json=issue_data,
@@ -378,12 +399,15 @@ class JiraClient:
             cert=self.cert,
             verify=True
         )
-
         if response.status_code == 201:
-            return response.json()
-        else:
-            self.logger.error("Jira error: %s", response.text)
-            return None
+            result = response.json()
+            self.logger.info("[%s] created %s %s (project=%s, issuetype=%s)", self.actor, result.get("key"),
+                             self.link(result.get("key")), fields.get("project"), fields.get("issuetype"))
+
+            return result
+        self.logger.error("[%s] failed to create issue (project=%s, issuetype=%s): %s",
+                          self.actor, fields.get("project"), fields.get("issuetype"), response.text)
+        return None
 
     def add_comment(self, issue_key, comment_text):
         """Add comment to Jira issue."""
@@ -468,36 +492,30 @@ class JiraClient:
             links = self.get_linked_issues(issue_key)
             matched = [link['key'] for link in links if match_fn(link)]
             if matched:
-                self.logger.info("%s: found linked issues %s (attempt %d)", issue_key, matched, attempt + 1)
+                self.logger.info("%s: found linked issues %s (attempt %d)", issue_key, [(k, self.link(k)) for k in matched], attempt + 1)
                 return matched
             self.logger.info("%s: waiting for linked issues... (attempt %d/%d)", issue_key, attempt + 1, max_attempts)
             time.sleep(delay)
         self.logger.warning("%s: no matching linked issues after %d attempts", issue_key, max_attempts)
         return []
 
-    def transition_issue(self, issue_key, transition_id, resolution_id=None):
+    def transition_issue(self, issue_key, transition_id, resolution_id=None, comment=None):
         """Perform a transition on a Jira issue."""
         url = f"{self.api_url}/rest/api/2/issue/{issue_key}/transitions"
-
         body = {"transition": {"id": transition_id}}
-
         if resolution_id:
-            body["fields"] = {
-                "resolution": {"id": resolution_id}
-            }
+            body["fields"] = {"resolution": {"id": resolution_id}}
+        if comment:
+            body["update"] = {"comment": [{"add": {"body": comment}}]}
 
-        response = session.post(
-            url,
-            headers=self.headers,
-            json=body,
-            timeout=self.timeout,
-            cert=self.cert,
-            verify=True
-        )
+        response = session.post(url, headers=self.headers, json=body, timeout=self.timeout,
+                                cert=self.cert, verify=True)
         if response.status_code == 204:
-            self.logger.info("Successfully transitioned %s with transition %s", issue_key, transition_id)
+            self.logger.info("[%s] transitioned %s with transition %s", self.actor, issue_key, transition_id)
             return True
-        self.logger.error("Failed to transition %s: %s %s", issue_key, response.status_code, response.text)
+        self.logger.error("[%s] failed to transition %s (id %s): %s %s | available to this user: %s",
+                          self.actor, issue_key, transition_id, response.status_code, response.text,
+                          list(self.get_transitions(issue_key).keys()))
         return False
 
     def get_issue_summary(self, issue_key):
@@ -534,11 +552,19 @@ class JiraClient:
             verify=True
         )
         if response.status_code == 204:
-            self.logger.info("Updated fields on %s: %s", issue_key, list(fields.keys()))
+            self.logger.info("[%s] updated fields on %s: %s", self.actor, issue_key, list(fields.keys()))
             return True
-        self.logger.error("Failed to update %s: %s %s",
+        self.logger.error("[%s] failed to update %s: %s %s", self.actor,
                           issue_key, response.status_code, response.text[:300])
         return False
+
+    def get_editable_fields(self, issue_key):
+        r = session.get(f"{self.api_url}/rest/api/2/issue/{issue_key}/editmeta", headers=self.headers,
+                        timeout=self.timeout, cert=self.cert, verify=True)
+        return set(r.json().get("fields", {})) if r.status_code == 200 else set()
+
+    def link(self, issue_key):
+        return f"{self.api_url}/browse/{issue_key}"
 
 
 class GiteaClient:
@@ -586,29 +612,32 @@ class GiteaClient:
         """Get affected locations from Gitea metadata for organization."""
         try:
             files = self.list_directory()
-
             if not files:
+                self.logger.warning("Gitea: directory listing is empty or failed (%s)", self.base_url)
                 return None
 
-            yaml_files = [item for item in files if item['type'] == 'file' and item['name'].endswith('.yaml')]
+            names = [i['name'] for i in files if i['type'] == 'file']
+            yaml_files = [n for n in names if n.endswith(('.yaml', '.yml'))]
+            self.logger.info("Gitea: %d files in directory, %d yaml", len(names), len(yaml_files))
 
-            for file_info in yaml_files:
-                file_name = file_info['name']
-                file_content = self.get_file_content(file_name)
-
-                if not file_content:
+            seen_orgs = {}
+            for file_name in yaml_files:
+                content = self.get_file_content(file_name)
+                if not content:
+                    self.logger.warning("Gitea: could not read %s", file_name)
                     continue
-
-                data = yaml.safe_load(file_content)
+                data = yaml.safe_load(content) or {}
                 public_org = data.get('public_org')
-
+                seen_orgs[file_name] = public_org
                 if public_org == org_name:
-                    affected_locations = data.get('affected_locations', [])
-                    if affected_locations:
-                        return affected_locations
+                    locations = data.get('affected_locations', [])
+                    if locations:
+                        self.logger.info("Gitea: %s matched org %s, %d locations", file_name, org_name, len(locations))
+                        return locations
+                    self.logger.warning("Gitea: %s matched org %s but affected_locations is empty", file_name, org_name)
 
+            self.logger.warning("Gitea: no file with public_org == %r; orgs seen: %s", org_name, seen_orgs)
             return None
-
         except Exception as e:
             self.logger.error("Error fetching affected locations from Gitea: %s", e)
             return None
@@ -678,8 +707,41 @@ class ConfluenceClient:
         if status and status.get('state', {}).get('final'):
             self.logger.info("Page %s is already final, skipping approval", page_id)
             return True
-
         return self.approve_page(page_id)
+
+
+    def update_page_body(self, page_id, transform):
+        """Read page storage body, apply transform(old) -> new, save as a new version."""
+        r = session.get(f"{self.base_url}/rest/api/content/{page_id}",
+                        params={"expand": "body.storage,version"},
+                        headers=self.headers, timeout=self.timeout)
+        if r.status_code != 200:
+            self.logger.error("Cannot read page %s: %s", page_id, r.status_code)
+            return False
+        page = r.json()
+        old = page["body"]["storage"]["value"]
+        try:
+            new = transform(old)
+        except ValueError as e:
+            self.logger.error("Page %s not changed: %s", page_id, e)
+            return False
+        if new == old:
+            self.logger.info("Page %s: nothing to change", page_id)
+            return True
+        payload = {
+            "id": str(page_id),
+            "type": "page",
+            "title": page["title"],
+            "version": {"number": page["version"]["number"] + 1, "message": "Updated by Giji"},
+            "body": {"storage": {"value": new, "representation": "storage"}},
+        }
+        r = session.put(f"{self.base_url}/rest/api/content/{page_id}",
+                        headers=self.headers, json=payload, timeout=self.timeout)
+        if r.status_code == 200:
+            self.logger.info("Updated page %s to version %s", page_id, payload["version"]["number"])
+            return True
+        self.logger.error("Failed to update page %s: %s %s", page_id, r.status_code, r.text[:300])
+        return False
 
 
 class Timer:
