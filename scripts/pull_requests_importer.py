@@ -16,8 +16,8 @@ jira_client = JiraClient(env_vars)
 gitea_client = GiteaClient(env_vars)
 confluence_client = ConfluenceClient(env_vars)
 
-jira_client    = JiraClient(env_vars, label="main")
-jira_creator   = JiraClient(env_vars, token=os.getenv("JIRA_API_TOKEN"), label="creator")
+jira_client = JiraClient(env_vars, label="main")
+jira_creator = JiraClient(env_vars, token=os.getenv("JIRA_API_TOKEN"), label="creator")
 jira_approver1 = JiraClient(env_vars, token=env_vars.jira_approver1_token, label="approver1")
 jira_approver2 = JiraClient(env_vars, token=env_vars.jira_approver2_token, label="approver2")
 
@@ -94,7 +94,7 @@ def notify_incomplete_template(org, repo, pr_number, missing):
         add_comment_to_pr(
             org, repo, pr_number,
             "Giji could not import this PR into Jira: these PR template sections are empty: "
-            + ", ".join(missing) + ". Please fill them in the PR description, the import will be retried automatically.")
+            + ", ".join(missing) + ". Please fill them in the PR, the import will be retried automatically.")
 
 
 def remove_label_from_pr(org, repo, pr_number, label):

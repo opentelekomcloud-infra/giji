@@ -458,7 +458,8 @@ class JiraClient:
             response = session.get(url, headers=self.headers, timeout=self.timeout, cert=self.cert, verify=True)
             if response.status_code == 200:
                 current_status = response.json()['fields']['status']['name']
-                self.logger.info("%s current status: %s (attempt %d/%d)", issue_key, current_status, attempt + 1,
+                self.logger.info("%s current status: %s (attempt %d/%d)",
+                                 issue_key, current_status, attempt + 1,
                                  max_attempts)
                 if current_status == target_status:
                     return True
@@ -492,9 +493,11 @@ class JiraClient:
             links = self.get_linked_issues(issue_key)
             matched = [link['key'] for link in links if match_fn(link)]
             if matched:
-                self.logger.info("%s: found linked issues %s (attempt %d)", issue_key, [(k, self.link(k)) for k in matched], attempt + 1)
+                self.logger.info("%s: found linked issues %s (attempt %d)", issue_key,
+                                 [(k, self.link(k)) for k in matched], attempt + 1)
                 return matched
-            self.logger.info("%s: waiting for linked issues... (attempt %d/%d)", issue_key, attempt + 1, max_attempts)
+            self.logger.info("%s: waiting for linked issues... (attempt %d/%d)",
+                             issue_key, attempt + 1, max_attempts)
             time.sleep(delay)
         self.logger.warning("%s: no matching linked issues after %d attempts", issue_key, max_attempts)
         return []
@@ -632,9 +635,11 @@ class GiteaClient:
                 if public_org == org_name:
                     locations = data.get('affected_locations', [])
                     if locations:
-                        self.logger.info("Gitea: %s matched org %s, %d locations", file_name, org_name, len(locations))
+                        self.logger.info("Gitea: %s matched org %s, %d locations",
+                                         file_name, org_name, len(locations))
                         return locations
-                    self.logger.warning("Gitea: %s matched org %s but affected_locations is empty", file_name, org_name)
+                    self.logger.warning("Gitea: %s matched org %s but affected_locations is empty",
+                                        file_name, org_name)
 
             self.logger.warning("Gitea: no file with public_org == %r; orgs seen: %s", org_name, seen_orgs)
             return None
@@ -708,7 +713,6 @@ class ConfluenceClient:
             self.logger.info("Page %s is already final, skipping approval", page_id)
             return True
         return self.approve_page(page_id)
-
 
     def update_page_body(self, page_id, transform):
         """Read page storage body, apply transform(old) -> new, save as a new version."""
