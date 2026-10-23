@@ -1,9 +1,8 @@
 """PR event handlers — called by scanner or webhooks."""
 import logging
-
 import requests
-
 import pull_requests_importer as giji
+from change_guide import prepare_guide
 
 logger = logging.getLogger(__name__)
 
@@ -38,25 +37,37 @@ def on_pr_opened(pr, org, repo, conn, cur):
         logger.info("PR %s already imported, skipping", pr_url)
         return
 
-    fields = giji.parse_pr_body(pr.get('body', ''))
-    if not fields.get('summary') and not fields.get('description'):
-        logger.warning("PR %s has no template fields, skipping", pr_url)
+    fields = giji.parse_pr_body(pr.get('body') or '')
+    missing = giji.missing_sections(fields)
+    if missing:
+        logger.warning("PR %s: template incomplete, missing: %s", pr_url, missing)
+        giji.notify_incomplete_template(org, repo, pr_number, missing)
         return
 
-    issue = giji.jira_client.create_issue(giji.build_issue_data(pr, fields, pr['title'], repo))
+    issue = giji.jira_creator.create_issue(giji.build_issue_data(pr, fields, pr['title'], repo))
     if not issue:
         logger.error("Failed to create Demand for %s", pr_url)
         return
 
     jira_key = issue['key']
     logger.info("Created Demand %s for %s", jira_key, pr_url)
+    _save_state(conn, cur, pr, repo, jira_key, {})
+
+    giji.remove_label_from_pr(org, repo, pr_number, giji.TEMPLATE_LABEL)
+    giji.add_label_to_pr(org, repo, pr_number, [giji.IMPORTED_LABEL])
+    giji.add_comment_to_pr(
+        org, repo, pr_number,
+        f"Imported to Jira: [{jira_key}]({giji.env_vars.jira_api_url}/browse/{jira_key})")
 
     if not giji.jira_client.wait_for_status(jira_key, "Ready", max_attempts=10, delay=30):
         logger.error("Timeout waiting for Ready on %s", jira_key)
         _save_state(conn, cur, pr, repo, jira_key, {})
         return
 
-    giji.jira_client.transition_issue(jira_key, "291")
+    if not giji.jira_client.transition_issue(jira_key, "291"):
+        logger.error("NoTestNoDoc transition failed for %s, stopping", jira_key)
+        _save_state(conn, cur, pr, repo, jira_key, {})
+        return
     logger.info("Triggered NoTestNoDoc for %s", jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
@@ -72,11 +83,6 @@ def on_pr_opened(pr, org, repo, conn, cur):
             giji.fill_risk_assessment(change_key, fields)
             urls[f'changeguide_{prefix}_url'] = giji.wait_for_change_guide(change_key)
 
-    giji.add_label_to_pr(org, repo, pr_number, [giji.IMPORTED_LABEL])
-    giji.add_comment_to_pr(
-        org, repo, pr_number,
-        f"Imported to Jira: [{jira_key}]({giji.env_vars.jira_api_url}/browse/{jira_key})")
-
     release_notes = fields.get('release_notes')
     if release_notes:
         giji.jira_client.add_comment(jira_key, f"*Release Notes (from GitHub PR):*\n\n{release_notes}")
@@ -85,18 +91,24 @@ def on_pr_opened(pr, org, repo, conn, cur):
     logger.info("on_pr_opened complete for %s -> %s", pr_url, jira_key)
 
 
-def on_pr_approved(pr_url, jira_key, conn, cur):
-    """PR approved — approve guide, close PREPARE, two approvals."""
+def on_pr_approved(pr_url, jira_key, conn, cur, pr):
+    """PR approved — fix up the change guide, approve it, close PREPARE, two approvals."""
     logger.info("on_pr_approved: %s -> %s", pr_url, jira_key)
 
     changes = giji.jira_client.wait_for_linked_issues(
         jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     for change_key in changes:
+        giji.fill_risk_assessment(change_key, giji.parse_pr_body(pr.get('body') or ''))
+
         guide_url = giji.jira_client.get_change_guide_url(change_key)
         if guide_url:
-            giji.confluence_client.approve_change_guide(guide_url)
-            logger.info("Approved guide for %s", change_key)
+            page_id = giji.confluence_client.extract_page_id(guide_url)
+            if giji.confluence_client.update_page_body(page_id, lambda body: prepare_guide(body, pr)):
+                giji.confluence_client.approve_change_guide(guide_url)
+                logger.info("Approved guide for %s", change_key)
+            else:
+                logger.error("Guide %s was not prepared, leaving it for a human", guide_url)
 
         prepare = giji.jira_client.wait_for_linked_issues(
             change_key,
@@ -143,29 +155,37 @@ def on_pr_merged(pr_url, jira_key, conn, cur):
 def on_pr_closed(pr_url, jira_key, conn, cur):
     """PR closed without merge — cancel Changes and Demand."""
     logger.info("on_pr_closed (unmerged): %s -> %s", pr_url, jira_key)
+    reason = f"Pull request was closed without merge: {pr_url}. Cancelled automatically by Giji."
+    ok = True
 
     changes = giji.jira_client.wait_for_linked_issues(
         jira_key, lambda link: link['issuetype'] == 'Change' and link['key'].startswith('OTCPR-'))
 
     for change_key in changes:
-        transitions = giji.jira_client.get_transitions(change_key)
-        stop_id = transitions.get('Stop')
-        if stop_id:
-            giji.jira_client.transition_issue(change_key, stop_id)
+        stop_id = giji.jira_client.get_transitions(change_key).get('Stop')
+        if not stop_id:
+            continue
+        if giji.jira_client.transition_issue(change_key, stop_id, comment=reason):
             logger.info("Cancelled Change %s", change_key)
+        else:
+            logger.error("Could not cancel Change %s", change_key)
+            ok = False
 
-    transitions = giji.jira_client.get_transitions(jira_key)
-    stop_id = transitions.get('Stop')
+    stop_id = giji.jira_client.get_transitions(jira_key).get('Stop')
     if stop_id:
-        giji.jira_client.transition_issue(jira_key, stop_id)
-        logger.info("Cancelled Demand %s", jira_key)
+        if giji.jira_client.transition_issue(jira_key, stop_id, comment=reason):
+            logger.info("Cancelled Demand %s", jira_key)
+        else:
+            logger.error("Could not cancel Demand %s", jira_key)
+            ok = False
 
-    cur.execute("""
-        UPDATE giji_prs
-        SET "Github PR State" = 'closed', "Github PR Merged" = FALSE, "updated_at" = NOW()
-        WHERE "Github PR URL" = %s
-    """, (pr_url,))
-    conn.commit()
+    if ok:
+        cur.execute("""
+            UPDATE giji_prs
+            SET "Github PR State" = 'closed', "Github PR Merged" = FALSE, "updated_at" = NOW()
+            WHERE "Github PR URL" = %s
+        """, (pr_url,))
+        conn.commit()
 
 
 def _save_state(conn, cur, pr, repo, jira_key, urls):
