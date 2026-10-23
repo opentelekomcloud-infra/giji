@@ -1,13 +1,16 @@
 """PR Scanner — runs on cron, detects state changes, calls handlers."""
 import logging
 import time
-
+import os
 import requests
 
 import pull_requests_importer as giji
 from pr_handlers import (
     get_pr_review_state, on_pr_opened, on_pr_approved, on_pr_merged, on_pr_closed
 )
+
+MAX_NEW_PRS_PER_RUN = int(os.getenv("MAX_NEW_PRS_PER_RUN", "2"))
+_imported_this_run = 0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -41,6 +44,7 @@ def get_db_state(cur, pr_url):
 
 
 def scan_repo(org, repo, conn, cur):
+    global _imported_this_run
     logger.info("Scanning %s/%s", org, repo)
     prs = get_all_prs(org, repo)
     logger.info("Got %d PRs from GitHub API", len(prs))
@@ -55,8 +59,14 @@ def scan_repo(org, repo, conn, cur):
 
         if db is None:
             if pr_state == 'open' and not pr.get('draft'):
+                if _imported_this_run >= MAX_NEW_PRS_PER_RUN:
+                    logger.info("Import limit (%d) reached, %s waits for the next run",
+                                MAX_NEW_PRS_PER_RUN, pr_url)
+                    continue
                 logger.info("New PR detected: %s", pr_url)
                 on_pr_opened(pr, org, repo, conn, cur)
+                if get_db_state(cur, pr_url) is not None:   # a Demand was actually created
+                    _imported_this_run += 1
             continue
 
         jira_key = db['jira_key']
