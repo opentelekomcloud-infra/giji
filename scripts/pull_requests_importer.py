@@ -34,6 +34,7 @@ IMPORTED_LABEL = "imported-to-jira"
 PROJECT_KEY = "OTCPR"
 ISSUE_TYPE_ID = "11001"
 JIRA_SUMMARY_LIMIT = 255
+JIRA_TEXT_LIMIT = 32767
 
 HARDCODED_VALUES = {
     "estimated_effort": "15104",
@@ -300,10 +301,6 @@ def wait_for_change_guide(change_key, max_attempts=8, delay=15):
         time.sleep(delay)
     logger.warning("%s: no change guide URL after %d attempts", change_key, max_attempts)
     return None
-
-
-JIRA_SUMMARY_LIMIT = 255
-JIRA_TEXT_LIMIT = 32767
 
 
 def jira_cut(text, link, limit, one_line=False):
