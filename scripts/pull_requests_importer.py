@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 IMPORTED_LABEL = "imported-to-jira"
 PROJECT_KEY = "OTCPR"
 ISSUE_TYPE_ID = "11001"
+JIRA_SUMMARY_LIMIT = 255
+JIRA_TEXT_LIMIT = 32767
 
 HARDCODED_VALUES = {
     "estimated_effort": "15104",
@@ -301,6 +303,19 @@ def wait_for_change_guide(change_key, max_attempts=8, delay=15):
     return None
 
 
+def jira_cut(text, link, limit, one_line=False):
+    """Fit text into a Jira field limit; a cut text ends with a link to the PR."""
+    if one_line:
+        text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    suffix = f"… more details at {link}"
+    room = limit - len(suffix)
+    if room < 20:
+        return text[: limit - 1].rstrip() + "…"
+    return text[:room].rstrip() + suffix
+
+
 def build_issue_data(pr, fields, pr_title, repo):
     summary = fields.get('summary') or pr_title
     description = build_jira_description(pr, fields, repo)
@@ -308,8 +323,8 @@ def build_issue_data(pr, fields, pr_title, repo):
         "fields": {
             "project": {"key": PROJECT_KEY},
             "issuetype": {"id": ISSUE_TYPE_ID},
-            "summary": f"[{repo}] {summary}",
-            "description": description[:32767],
+            "summary": jira_cut(f"[{repo}] {summary}", pr['html_url'], JIRA_SUMMARY_LIMIT, one_line=True),
+            "description": jira_cut(description, pr['html_url'], JIRA_TEXT_LIMIT),
             TEMPLATE_FIELD_MAP["master_component"]: [{"key": get_master_component(repo)}],
             TEMPLATE_FIELD_MAP["affected_locations"]: [
                 {"value": loc} for loc in get_affected_locations(GITHUB_ORG)
