@@ -30,15 +30,38 @@ def _is_task(prefix):
     return lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith(prefix)
 
 
+class JiraReadError(RuntimeError):
+    """A Jira read failed. Raised instead of returning an empty result, so that a failed call is never
+    mistaken for "nothing left to do"; scan_repo catches it and the PR is retried on the next run."""
+
+
+def _jira_get(path):
+    c = giji.jira_client
+    r = requests.get(f"{c.api_url}/rest/api/2/{path}", headers=c.headers, cert=c.cert, timeout=c.timeout)
+    if r.status_code != 200:
+        raise JiraReadError(f"Jira GET {path}: HTTP {r.status_code}")
+    return r.json()
+
+
 def _linked(key, match_fn):
-    return [link['key'] for link in giji.jira_client.get_linked_issues(key) if match_fn(link)]
+    """Keys of linked issues matching match_fn. Raises JiraReadError if Jira did not answer."""
+    links = []
+    for link in _jira_get(f"issue/{key}?fields=issuelinks")['fields'].get('issuelinks', []):
+        linked = link.get('inwardIssue') or link.get('outwardIssue')
+        if linked:
+            links.append({'key': linked['key'],
+                          'issuetype': linked['fields']['issuetype']['name'],
+                          'summary': linked['fields'].get('summary', '')})
+    return [link['key'] for link in links if match_fn(link)]
+
+
+def _transitions(key):
+    """Transitions available to the main client. Raises JiraReadError if Jira did not answer."""
+    return {t['name']: t['id'] for t in _jira_get(f"issue/{key}/transitions")['transitions']}
 
 
 def _status(key):
-    c = giji.jira_client
-    r = requests.get(f"{c.api_url}/rest/api/2/issue/{key}?fields=status",
-                     headers=c.headers, cert=c.cert, timeout=c.timeout)
-    return r.json()['fields']['status']['name'] if r.status_code == 200 else None
+    return _jira_get(f"issue/{key}?fields=status")['fields']['status']['name']
 
 
 def get_pr_review_state(pr):
@@ -166,7 +189,7 @@ def _ensure_approved(pr, changes, fields):
                 logger.error("Guide %s was not prepared, leaving it for a human", guide_url)
 
         for task in _linked(change_key, _is_task('PREPARE:')):
-            if 'Done' in giji.jira_client.get_transitions(task):
+            if 'Done' in _transitions(task):
                 giji.close_squad_task(task)
                 logger.info("Closed PREPARE %s", task)
 
@@ -183,8 +206,13 @@ def _ensure_merged(changes):
     """Close EXECUTE. Complete when no EXECUTE task can still be closed."""
     complete = True
     for change_key in changes:
-        for task in _linked(change_key, _is_task('EXECUTE:')):
-            if 'Done' not in giji.jira_client.get_transitions(task):
+        tasks = _linked(change_key, _is_task('EXECUTE:'))
+        if not tasks:
+            # an approved Change always has its EXECUTE task: none means Jira is not there yet
+            logger.warning("%s: no EXECUTE task found, will check again on the next run", change_key)
+            complete = False
+        for task in tasks:
+            if 'Done' not in _transitions(task):
                 continue                                # already closed
             if giji.close_squad_task(task):
                 logger.info("Closed EXECUTE %s", task)
@@ -198,7 +226,7 @@ def _ensure_cancelled(pr_url, jira_key, changes):
     reason = f"Pull request was closed without merge: {pr_url}. Cancelled automatically by Giji."
     ok = True
     for key in changes + [jira_key]:
-        stop_id = giji.jira_client.get_transitions(key).get('Stop')
+        stop_id = _transitions(key).get('Stop')
         if not stop_id:
             continue                                    # already stopped or closed
         if giji.jira_client.transition_issue(key, stop_id, comment=reason):
@@ -231,6 +259,10 @@ def reconcile(pr, row, conn, cur, repo):
         stage = giji.set_stage(conn, cur, pr_url, STAGE_OPENED)
 
     changes = _linked(jira_key, _is_change)
+    if not changes:
+        # past STAGE_CREATED the Demand always has Changes: none means Jira is not there yet
+        logger.warning("%s: no Changes returned by Jira, will check again on the next run", jira_key)
+        return
 
     if stage == STAGE_OPENED:
         # a merged PR needs the approval steps too: Jira creates EXECUTE only after two approvals
