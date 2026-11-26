@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 IMPORTED_LABEL = "imported-to-jira"
 PROJECT_KEY = "OTCPR"
 ISSUE_TYPE_ID = "11001"
-JIRA_SUMMARY_LIMIT = 255
+# Jira's automation creates the Changes with "Prod: " / "PreProd: " + the Demand summary,
+# so the Demand summary must leave room for that prefix within Jira's 255-character limit.
+JIRA_CHANGE_PREFIX_RESERVE = 20
+JIRA_SUMMARY_LIMIT = 255 - JIRA_CHANGE_PREFIX_RESERVE
 JIRA_TEXT_LIMIT = 32767
 
 HARDCODED_VALUES = {
@@ -257,6 +260,8 @@ def build_jira_description(pr, fields, repo):
     pr_author = pr.get('user', {}).get('login', 'unknown')
 
     parts = []
+    if fields.get('summary'):
+        parts.append(fields['summary'] + "\n\n")
     if fields.get('description'):
         parts.append(fields['description'])
 
@@ -333,7 +338,7 @@ def jira_cut(text, link, limit, one_line=False):
 
 
 def build_issue_data(pr, fields, pr_title, repo):
-    summary = fields.get('summary') or pr_title
+    summary = pr_title
     description = build_jira_description(pr, fields, repo)
     return {
         "fields": {
