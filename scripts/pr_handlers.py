@@ -135,9 +135,11 @@ def import_pr(pr, org, repo, conn, cur):
     jira_key = issue['key']
     logger.info("Created Demand %s for %s%s", jira_key, pr_url, " (merged before Giji saw it)" if merged else "")
     if not _save_state(conn, cur, pr, repo, jira_key, {}):
-        # No row means reconcile would never see it: leave the PR unlabelled and say where the Demand is
-        logger.error("Demand %s for %s could not be recorded in the DB; it is not tracked, "
-                     "cancel it in Jira or insert the row by hand", jira_key, pr_url)
+        logger.error("Demand %s for %s could not be recorded in the DB, cancelling it", jira_key, pr_url)
+        stop_id = giji.jira_client.get_transitions(jira_key).get('Stop')
+        reason = "Giji could not record this Demand; a new one is created on the next run."
+        if not stop_id or not giji.jira_client.transition_issue(jira_key, stop_id, comment=reason):
+            logger.error("Could not cancel %s, cancel it in Jira by hand", jira_key)
         return False
     giji.set_stage(conn, cur, pr_url, STAGE_CREATED)
 
