@@ -33,10 +33,7 @@ logger = logging.getLogger(__name__)
 IMPORTED_LABEL = "imported-to-jira"
 PROJECT_KEY = "OTCPR"
 ISSUE_TYPE_ID = "11001"
-# Jira's automation creates the Changes with "Prod: " / "PreProd: " + the Demand summary,
-# so the Demand summary must leave room for that prefix within Jira's 255-character limit.
-JIRA_CHANGE_PREFIX_RESERVE = 20
-JIRA_SUMMARY_LIMIT = 255 - JIRA_CHANGE_PREFIX_RESERVE
+JIRA_SUMMARY_LIMIT = 255
 JIRA_TEXT_LIMIT = 32767
 
 HARDCODED_VALUES = {
@@ -136,9 +133,25 @@ def create_prs_table(conn_csv, cur_csv):
             "updated_at" TIMESTAMP DEFAULT NOW()
         );'''
         )
+        # Progress of each PR through the Change flow (see pr_handlers.reconcile).
+        # Rows from before this column existed: closed PRs are finished, open ones are re-checked.
+        cur_csv.execute('ALTER TABLE giji_prs ADD COLUMN IF NOT EXISTS "Giji Stage" VARCHAR(20)')
+        cur_csv.execute('''UPDATE giji_prs SET "Giji Stage" =
+                CASE WHEN "Github PR State" = 'closed' THEN 'done' ELSE 'created' END
+            WHERE "Giji Stage" IS NULL AND "Jira Demand Key" IS NOT NULL''')
         conn_csv.commit()
     except Exception as e:
+        conn_csv.rollback()
         logging.error("giji_prs table: an error occurred while trying to create a table: %s", e)
+
+
+def set_stage(conn_csv, cur_csv, pr_url, stage):
+    """Record how far a PR got in the Change flow. Returns the stage."""
+    cur_csv.execute('UPDATE giji_prs SET "Giji Stage" = %s, "updated_at" = NOW() WHERE "Github PR URL" = %s',
+                    (stage, pr_url))
+    conn_csv.commit()
+    logger.info("%s -> stage %s", pr_url, stage)
+    return stage
 
 
 def get_open_prs(org, repo):
@@ -244,8 +257,6 @@ def build_jira_description(pr, fields, repo):
     pr_author = pr.get('user', {}).get('login', 'unknown')
 
     parts = []
-    if fields.get('summary'):
-        parts.append(fields['summary'] + "\n\n")
     if fields.get('description'):
         parts.append(fields['description'])
 
@@ -322,7 +333,7 @@ def jira_cut(text, link, limit, one_line=False):
 
 
 def build_issue_data(pr, fields, pr_title, repo):
-    summary = pr_title
+    summary = fields.get('summary') or pr_title
     description = build_jira_description(pr, fields, repo)
     return {
         "fields": {
