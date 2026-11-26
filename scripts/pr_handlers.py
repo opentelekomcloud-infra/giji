@@ -1,13 +1,14 @@
 """PR handlers: import a PR as a Demand, then reconcile Jira with the PR's real state on every run.
 
 Every step checks Jira first and only does what is still missing, so a run that was interrupted,
-a Jira that was slow, or a PR that was approved and merged between two scans is simply caught up
-on the next run. A PR is marked done in the database only when Jira has really reached the end.
+a Jira that was slow, or a PR that was approved and merged between two scans is caught up on the
+next run. A stage is advanced only when every Jira read in that step succeeded and Jira has really
+reached that point; a failed read raises instead of looking like "nothing left to do".
 """
 import logging
-import requests
 import pull_requests_importer as giji
 from change_guide import prepare_guide
+from config.connections import session          # retries 429/5xx, then raises
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +18,52 @@ STAGE_OPENED = 'opened'        # NoTestNoDoc done, Changes exist, Risk Assessmen
 STAGE_APPROVED = 'approved'    # Change Guides approved, PREPARE closed, Changes approved (EXECUTE exists)
 STAGE_DONE = 'done'            # merged: EXECUTE closed / closed without merge: cancelled
 STAGE_SKIPPED = 'skipped'      # merged PR seen too late and without a filled template: not imported
+STAGE_MANUAL = 'manual'        # merged without an approving review: Giji does not approve, a human decides
+FINAL_STAGES = (STAGE_DONE, STAGE_SKIPPED, STAGE_MANUAL)
 
 # Short waits: whatever is not ready yet is picked up again on the next run
 SHORT_WAIT = {"max_attempts": 2, "delay": 15}
+APPROVE_WAIT = {"max_attempts": 1, "delay": 0}
+
+
+class JiraReadError(RuntimeError):
+    """A Jira read failed. Raised instead of returning an empty result, so that a failed call is never
+    mistaken for "nothing left to do"; scan_repo catches it and the PR is retried on the next run."""
+
+
+def _jira_get(path):
+    c = giji.jira_client
+    r = session.get(f"{c.api_url}/rest/api/2/{path}", headers=c.headers, cert=c.cert, timeout=c.timeout)
+    if r.status_code != 200:
+        raise JiraReadError(f"Jira GET {path}: HTTP {r.status_code} as {c.actor}")
+    return r.json()
+
+
+def _links(key):
+    out = []
+    for link in _jira_get(f"issue/{key}?fields=issuelinks")['fields'].get('issuelinks', []):
+        linked = link.get('inwardIssue') or link.get('outwardIssue')
+        if linked:
+            out.append({'key': linked['key'],
+                        'issuetype': linked['fields']['issuetype']['name'],
+                        'summary': linked['fields'].get('summary', '')})
+    return out
+
+
+def _linked(key, match_fn):
+    """Keys of linked issues matching match_fn. Raises JiraReadError if Jira did not answer."""
+    return [link['key'] for link in _links(key) if match_fn(link)]
+
+
+def _transitions(key):
+    """Transitions available to the main client. Raises JiraReadError if Jira did not answer."""
+    return {t['name']: t['id'] for t in _jira_get(f"issue/{key}/transitions")['transitions']}
+
+
+def _status(key):
+    """(status name, status category key: 'new' / 'indeterminate' / 'done'). Raises JiraReadError."""
+    status = _jira_get(f"issue/{key}?fields=status")['fields']['status']
+    return status['name'], status.get('statusCategory', {}).get('key')
 
 
 def _is_change(link):
@@ -30,45 +74,11 @@ def _is_task(prefix):
     return lambda link: not link['key'].startswith('OTCPR-') and link['summary'].startswith(prefix)
 
 
-class JiraReadError(RuntimeError):
-    """A Jira read failed. Raised instead of returning an empty result, so that a failed call is never
-    mistaken for "nothing left to do"; scan_repo catches it and the PR is retried on the next run."""
-
-
-def _jira_get(path):
-    c = giji.jira_client
-    r = requests.get(f"{c.api_url}/rest/api/2/{path}", headers=c.headers, cert=c.cert, timeout=c.timeout)
-    if r.status_code != 200:
-        raise JiraReadError(f"Jira GET {path}: HTTP {r.status_code}")
-    return r.json()
-
-
-def _linked(key, match_fn):
-    """Keys of linked issues matching match_fn. Raises JiraReadError if Jira did not answer."""
-    links = []
-    for link in _jira_get(f"issue/{key}?fields=issuelinks")['fields'].get('issuelinks', []):
-        linked = link.get('inwardIssue') or link.get('outwardIssue')
-        if linked:
-            links.append({'key': linked['key'],
-                          'issuetype': linked['fields']['issuetype']['name'],
-                          'summary': linked['fields'].get('summary', '')})
-    return [link['key'] for link in links if match_fn(link)]
-
-
-def _transitions(key):
-    """Transitions available to the main client. Raises JiraReadError if Jira did not answer."""
-    return {t['name']: t['id'] for t in _jira_get(f"issue/{key}/transitions")['transitions']}
-
-
-def _status(key):
-    return _jira_get(f"issue/{key}?fields=status")['fields']['status']['name']
-
-
 def get_pr_review_state(pr):
-    """Aggregate review state for a PR from GitHub API."""
+    """Review state of a PR: 'approved' only with at least one approval and no outstanding change request."""
     url = (f"{giji.GITHUB_API_URL}/repos/{pr['base']['repo']['full_name']}"
            f"/pulls/{pr['number']}/reviews")
-    response = requests.get(url, headers=giji.GITHUB_HEADERS, timeout=30)
+    response = session.get(url, headers=giji.GITHUB_HEADERS, timeout=30)
     if response.status_code != 200:
         return None
 
@@ -78,17 +88,17 @@ def get_pr_review_state(pr):
         if state in ('APPROVED', 'CHANGES_REQUESTED'):
             latest[review['user']['login']] = state
 
-    if any(s == 'APPROVED' for s in latest.values()):
-        return 'approved'
     if any(s == 'CHANGES_REQUESTED' for s in latest.values()):
         return 'changes_requested'
+    if any(s == 'APPROVED' for s in latest.values()):
+        return 'approved'
     return 'pending'
 
 
 # ---------------------------------------------------------------- import
 
 def import_pr(pr, org, repo, conn, cur):
-    """Create the Demand for a PR. Returns True if a Demand was created.
+    """Create the Demand for a PR. Returns True if a Demand was created and recorded.
 
     The rest of the flow (NoTestNoDoc, Changes, approvals, closure) is done by reconcile()."""
     pr_url = pr['html_url']
@@ -104,10 +114,15 @@ def import_pr(pr, org, repo, conn, cur):
     if missing:
         logger.warning("PR %s: template incomplete, missing: %s", pr_url, missing)
         if merged:
-            # Nobody can fix the body of a merged PR any more: remember it, don't retry every run
-            giji.save_pr_to_db(conn, cur, pr_url=pr_url, pr_state=pr.get('state'), pr_merged=True,
-                               github_repo=repo, demand_url=None)
-            giji.set_stage(conn, cur, pr_url, STAGE_SKIPPED)
+            # Nobody can fix the body of a merged PR any more: tell the author once, don't retry every run
+            if giji.save_pr_to_db(conn, cur, pr_url=pr_url, pr_state=pr.get('state'), pr_merged=True,
+                                  github_repo=repo, demand_url=None):
+                giji.set_stage(conn, cur, pr_url, STAGE_SKIPPED)
+                if giji.add_label_to_pr(org, repo, pr_number, [giji.TEMPLATE_LABEL]):
+                    giji.add_comment_to_pr(
+                        org, repo, pr_number,
+                        "Giji did not import this PR into Jira: it was merged with these PR template sections "
+                        "empty: " + ", ".join(missing) + ". Please create the Jira Demand by hand.")
         else:
             giji.notify_incomplete_template(org, repo, pr_number, missing)
         return False
@@ -119,7 +134,11 @@ def import_pr(pr, org, repo, conn, cur):
 
     jira_key = issue['key']
     logger.info("Created Demand %s for %s%s", jira_key, pr_url, " (merged before Giji saw it)" if merged else "")
-    _save_state(conn, cur, pr, repo, jira_key, {})
+    if not _save_state(conn, cur, pr, repo, jira_key, {}):
+        # No row means reconcile would never see it: leave the PR unlabelled and say where the Demand is
+        logger.error("Demand %s for %s could not be recorded in the DB; it is not tracked, "
+                     "cancel it in Jira or insert the row by hand", jira_key, pr_url)
+        return False
     giji.set_stage(conn, cur, pr_url, STAGE_CREATED)
 
     giji.remove_label_from_pr(org, repo, pr_number, giji.TEMPLATE_LABEL)
@@ -140,7 +159,7 @@ def _ensure_opened(pr, jira_key, fields, conn, cur, repo):
     """NoTestNoDoc, Changes, Risk Assessment. Returns the Change keys when complete, else []."""
     changes = _linked(jira_key, _is_change)
     if not changes:
-        status = _status(jira_key)
+        status, _ = _status(jira_key)
         if status == 'Ready':
             if not giji.jira_client.transition_issue(jira_key, "291"):
                 logger.error("NoTestNoDoc transition failed for %s", jira_key)
@@ -150,25 +169,26 @@ def _ensure_opened(pr, jira_key, fields, conn, cur, repo):
             logger.info("%s is '%s', no Changes yet", jira_key, status)
         changes = giji.jira_client.wait_for_linked_issues(jira_key, _is_change, **SHORT_WAIT)
         if not changes:
-            logger.warning("%s: no Changes yet (status '%s'), will check again on the next run",
-                           jira_key, _status(jira_key))
+            logger.warning("%s: no Changes yet, will check again on the next run", jira_key)
             return []
 
-    urls = {}
-    for change_key in changes:
-        guide_url = giji.jira_client.get_change_guide_url(change_key)
-        if not guide_url:
-            logger.info("%s: Change Guide not created yet, will check again on the next run", change_key)
-            return []
-        prefix = 'preprod' if giji.jira_client.get_issue_summary(change_key).startswith("PreProd:") else 'prod'
-        urls[f'change_{prefix}_url'] = giji.jira_client.link(change_key)
-        urls[f'changeguide_{prefix}_url'] = guide_url
-
+    # Risk Assessment first: it does not depend on the guide, and fill_risk_assessment only writes
+    # the fields Jira lets us edit in the Change's current status
     for change_key in changes:
         giji.fill_risk_assessment(change_key, fields)
 
-    _save_state(conn, cur, pr, repo, jira_key, urls)
-    return changes
+    urls, complete = {}, True
+    for change_key in changes:
+        prefix = 'preprod' if giji.jira_client.get_issue_summary(change_key).startswith("PreProd:") else 'prod'
+        urls[f'change_{prefix}_url'] = giji.jira_client.link(change_key)
+        guide_url = giji.jira_client.get_change_guide_url(change_key)
+        if guide_url:
+            urls[f'changeguide_{prefix}_url'] = guide_url
+        else:
+            logger.info("%s: Change Guide not created yet, will check again on the next run", change_key)
+            complete = False
+    _save_state(conn, cur, pr, repo, jira_key, urls)          # keep the URLs found so far
+    return changes if complete else []
 
 
 def _ensure_approved(pr, changes, fields):
@@ -193,7 +213,8 @@ def _ensure_approved(pr, changes, fields):
                 giji.close_squad_task(task)
                 logger.info("Closed PREPARE %s", task)
 
-        approved = giji.approve_change(change_key)
+        # one quick try per run; if Approve is not offered yet, the next run tries again
+        approved = giji.approve_change(change_key, **APPROVE_WAIT)
         logger.info("Change %s: %d approval(s) given this run", change_key, approved)
 
         if not giji.jira_client.wait_for_linked_issues(change_key, _is_task('EXECUTE:'), **SHORT_WAIT):
@@ -203,7 +224,7 @@ def _ensure_approved(pr, changes, fields):
 
 
 def _ensure_merged(changes):
-    """Close EXECUTE. Complete when no EXECUTE task can still be closed."""
+    """Close EXECUTE. Complete only when every EXECUTE task is in a final status."""
     complete = True
     for change_key in changes:
         tasks = _linked(change_key, _is_task('EXECUTE:'))
@@ -212,29 +233,31 @@ def _ensure_merged(changes):
             logger.warning("%s: no EXECUTE task found, will check again on the next run", change_key)
             complete = False
         for task in tasks:
-            if 'Done' not in _transitions(task):
+            if _status(task)[1] == 'done':
                 continue                                # already closed
-            if giji.close_squad_task(task):
-                logger.info("Closed EXECUTE %s", task)
-            else:
+            if not giji.close_squad_task(task) or _status(task)[1] != 'done':
+                logger.warning("EXECUTE %s is not closed yet, will check again on the next run", task)
                 complete = False
+            else:
+                logger.info("Closed EXECUTE %s", task)
     return complete
 
 
 def _ensure_cancelled(pr_url, jira_key, changes):
-    """Cancel the Changes and the Demand of a PR closed without merge."""
+    """Cancel the Changes and the Demand of a PR closed without merge.
+    Complete only when every one of them is in a final status."""
     reason = f"Pull request was closed without merge: {pr_url}. Cancelled automatically by Giji."
-    ok = True
+    complete = True
     for key in changes + [jira_key]:
-        stop_id = _transitions(key).get('Stop')
-        if not stop_id:
+        if _status(key)[1] == 'done':
             continue                                    # already stopped or closed
-        if giji.jira_client.transition_issue(key, stop_id, comment=reason):
+        stop_id = _transitions(key).get('Stop')
+        if stop_id and giji.jira_client.transition_issue(key, stop_id, comment=reason):
             logger.info("Cancelled %s", key)
-        else:
-            logger.error("Could not cancel %s", key)
-            ok = False
-    return ok
+        if _status(key)[1] != 'done':
+            logger.warning("%s is not in a final status yet, will check again on the next run", key)
+            complete = False
+    return complete
 
 
 # ---------------------------------------------------------------- reconcile
@@ -243,7 +266,7 @@ def reconcile(pr, row, conn, cur, repo):
     """Bring Jira up to the PR's real state in GitHub, step by step, as far as Jira allows now."""
     pr_url = pr['html_url']
     jira_key = row['jira_key']
-    stage = row['stage']
+    stage = row['stage'] or STAGE_CREATED           # a row whose stage was never written starts over, safely
     merged = bool(pr.get('merged_at'))
     closed_unmerged = pr['state'] == 'closed' and not merged
     fields = giji.parse_pr_body(pr.get('body') or '')
@@ -254,23 +277,35 @@ def reconcile(pr, row, conn, cur, repo):
         return
 
     if stage == STAGE_CREATED:
-        if not _ensure_opened(pr, jira_key, fields, conn, cur, repo):
+        changes = _ensure_opened(pr, jira_key, fields, conn, cur, repo)
+        if not changes:
             return
         stage = giji.set_stage(conn, cur, pr_url, STAGE_OPENED)
-
-    changes = _linked(jira_key, _is_change)
-    if not changes:
-        # past STAGE_CREATED the Demand always has Changes: none means Jira is not there yet
-        logger.warning("%s: no Changes returned by Jira, will check again on the next run", jira_key)
-        return
+    else:
+        changes = _linked(jira_key, _is_change)
+        if not changes:
+            # past STAGE_CREATED the Demand always has Changes: none means Jira is not there yet
+            logger.warning("%s: no Changes returned by Jira, will check again on the next run", jira_key)
+            return
 
     if stage == STAGE_OPENED:
-        # a merged PR needs the approval steps too: Jira creates EXECUTE only after two approvals
-        approved = merged or get_pr_review_state(pr) == 'approved'
-        if not approved:
+        review = get_pr_review_state(pr)
+        if review is None:
+            logger.warning("Could not read reviews of %s, will check again on the next run", pr_url)
             return
-        logger.info("PR %s is %s, running the approval steps for %s",
-                    pr_url, "merged" if merged else "approved", jira_key)
+        if review != 'approved':
+            if merged:
+                # The change is already live, but nobody approved it in GitHub: Giji does not approve the
+                # Change in Jira on its own. Hand it over to a human and stop reconciling it.
+                giji.jira_client.add_comment(
+                    jira_key, f"The pull request {pr_url} was merged without an approving review "
+                              f"(review state: {review}). Giji did not approve the Changes; "
+                              f"please complete them by hand.")
+                giji.set_stage(conn, cur, pr_url, STAGE_MANUAL)
+                logger.warning("PR %s merged without approval, %s handed over to a human", pr_url, jira_key)
+            return
+        logger.info("PR %s is approved%s, running the approval steps for %s",
+                    pr_url, " and merged" if merged else "", jira_key)
         if not _ensure_approved(pr, changes, fields):
             return
         stage = giji.set_stage(conn, cur, pr_url, STAGE_APPROVED)
@@ -301,8 +336,8 @@ def _set_review_state(conn, cur, pr_url, state):
 
 
 def _save_state(conn, cur, pr, repo, jira_key, urls):
-    """Insert/update PR state in DB."""
-    giji.save_pr_to_db(
+    """Insert/update PR state in DB. Returns True if the row was written."""
+    return giji.save_pr_to_db(
         conn, cur,
         pr_url=pr['html_url'],
         pr_state=pr.get('state'),
@@ -312,4 +347,3 @@ def _save_state(conn, cur, pr, repo, jira_key, urls):
         demand_url=f"{giji.env_vars.jira_api_url}/browse/{jira_key}",
         **urls
     )
-    conn.commit()

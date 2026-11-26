@@ -2,16 +2,15 @@
 import logging
 import time
 import os
-from datetime import datetime
-import requests
+from datetime import datetime, timezone
+from config.connections import session          # retries 429/5xx, then raises
 
 import pull_requests_importer as giji
-from pr_handlers import import_pr, reconcile, STAGE_DONE, STAGE_SKIPPED
+from pr_handlers import import_pr, reconcile, FINAL_STAGES
 
 MAX_NEW_PRS_PER_RUN = int(os.getenv("MAX_NEW_PRS_PER_RUN", "2"))
 # PRs merged before Giji ever saw them are imported only if merged after this moment (ISO 8601, UTC),
 # so turning Giji on does not pull the whole merge history into Jira.
-CATCHUP_SINCE = os.getenv("PR_CATCHUP_SINCE", "2026-11-26T00:00:00Z")
 _imported_this_run = 0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -19,7 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 def _ts(value):
-    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    """ISO 8601 timestamp as an aware UTC datetime; a value without offset (e.g. "2026-11-26") is taken as UTC."""
+    ts = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+# Checked at import time, so a bad override fails the job at start with a clear message
+_raw_catchup = os.getenv("PR_CATCHUP_SINCE", "2026-11-26T00:00:00Z")
+try:
+    CATCHUP_SINCE = _ts(_raw_catchup)
+except ValueError as e:
+    raise SystemExit(f"PR_CATCHUP_SINCE={_raw_catchup!r} is not an ISO 8601 date/time: {e}")
 
 
 def get_recent_prs(org, repo):
@@ -27,9 +36,9 @@ def get_recent_prs(org, repo):
     prs = []
     for state in ('open', 'closed'):
         url = f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls"
-        response = requests.get(url, headers=giji.GITHUB_HEADERS,
-                                params={"state": state, "per_page": 30, "sort": "updated", "direction": "desc"},
-                                timeout=30)
+        response = session.get(url, headers=giji.GITHUB_HEADERS,
+                               params={"state": state, "per_page": 30, "sort": "updated", "direction": "desc"},
+                               timeout=30)
         if response.status_code == 200:
             prs.extend(response.json())
         else:
@@ -39,8 +48,8 @@ def get_recent_prs(org, repo):
 
 
 def get_pr(org, repo, number):
-    r = requests.get(f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls/{number}",
-                     headers=giji.GITHUB_HEADERS, timeout=30)
+    r = session.get(f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls/{number}",
+                    headers=giji.GITHUB_HEADERS, timeout=30)
     return r.json() if r.status_code == 200 else None
 
 
@@ -53,8 +62,9 @@ def unfinished_rows(cur, repo):
     cur.execute("""
         SELECT "Github PR URL", "Jira Demand Key", "Giji Stage" FROM giji_prs
         WHERE "Github Repo" = %s AND "Jira Demand Key" IS NOT NULL
-          AND COALESCE("Giji Stage", '') NOT IN (%s, %s)
-    """, (repo, STAGE_DONE, STAGE_SKIPPED))
+          AND COALESCE("Giji Stage", '') NOT IN %s
+        ORDER BY "created_at"
+    """, (repo, FINAL_STAGES))
     return [{'url': u, 'jira_key': k, 'stage': s} for u, k, s in cur.fetchall()]
 
 
@@ -64,7 +74,7 @@ def should_import(pr):
     if pr['state'] == 'open':
         return True
     # merged between two scans, never seen open: catch it up, but only recent ones
-    return bool(pr.get('merged_at')) and _ts(pr['merged_at']) >= _ts(CATCHUP_SINCE)
+    return bool(pr.get('merged_at')) and _ts(pr['merged_at']) >= CATCHUP_SINCE
 
 
 def scan_repo(org, repo, conn, cur):
@@ -82,8 +92,12 @@ def scan_repo(org, repo, conn, cur):
             continue
         logger.info("New PR detected: %s (%s)", pr['html_url'],
                     "merged" if pr.get('merged_at') else pr['state'])
-        if import_pr(pr, org, repo, conn, cur):
-            _imported_this_run += 1
+        try:
+            if import_pr(pr, org, repo, conn, cur):
+                _imported_this_run += 1
+        except Exception:                                # one broken PR must not stop the others
+            conn.rollback()
+            logger.exception("Import failed for %s, will retry on the next run", pr['html_url'])
 
     # 2. every PR whose flow is not finished: compare GitHub with Jira and catch up
     for row in unfinished_rows(cur, repo):
@@ -107,7 +121,7 @@ def main():
                 giji.env_vars.github_org, giji.env_vars.monitored_repos)
     logger.info("=" * 60)
 
-    me = requests.get(f"{giji.GITHUB_API_URL}/user", headers=giji.GITHUB_HEADERS, timeout=30)
+    me = session.get(f"{giji.GITHUB_API_URL}/user", headers=giji.GITHUB_HEADERS, timeout=30)
     logger.info("GitHub token acts as: %s (expires %s)",
                 me.json().get("login") if me.status_code == 200 else me.status_code,
                 me.headers.get("github-authentication-token-expiration"))

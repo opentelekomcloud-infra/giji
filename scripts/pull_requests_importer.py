@@ -305,9 +305,11 @@ def save_pr_to_db(conn_csv, cur_csv, pr_url, pr_state, pr_merged, demand_url,
               change_prod_url, changeguide_prod_url))
         conn_csv.commit()
         logger.info("Saved PR %s to DB", pr_url)
+        return True
     except Exception as e:
         logger.error("Failed to save PR to DB: %s", e)
         conn_csv.rollback()
+        return False
 
 
 def wait_for_change_guide(change_key, max_attempts=8, delay=15):
