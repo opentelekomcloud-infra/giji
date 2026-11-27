@@ -1,29 +1,44 @@
-"""PR Scanner — runs on cron, detects state changes, calls handlers."""
+"""PR Scanner — runs on cron: imports new PRs and reconciles Jira with the real state of known PRs."""
 import logging
 import time
 import os
-import requests
+from datetime import datetime, timezone
+from config.connections import session          # retries 429/5xx, then raises
 
 import pull_requests_importer as giji
-from pr_handlers import (
-    get_pr_review_state, on_pr_opened, on_pr_approved, on_pr_merged, on_pr_closed
-)
+from pr_handlers import import_pr, reconcile, FINAL_STAGES, STAGE_DONE
 
 MAX_NEW_PRS_PER_RUN = int(os.getenv("MAX_NEW_PRS_PER_RUN", "2"))
+# PRs merged before Giji ever saw them are imported only if merged after this moment (ISO 8601, UTC),
+# so turning Giji on does not pull the whole merge history into Jira.
 _imported_this_run = 0
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def get_all_prs(org, repo):
-    """Fetch open + recently closed PRs."""
+def _ts(value):
+    """ISO 8601 timestamp as an aware UTC datetime; a value without offset (e.g. "2026-11-26") is taken as UTC."""
+    ts = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+# Checked at import time, so a bad override fails the job at start with a clear message
+_raw_catchup = os.getenv("PR_CATCHUP_SINCE", "2026-11-26T00:00:00Z")
+try:
+    CATCHUP_SINCE = _ts(_raw_catchup)
+except ValueError as e:
+    raise SystemExit(f"PR_CATCHUP_SINCE={_raw_catchup!r} is not an ISO 8601 date/time: {e}")
+
+
+def get_recent_prs(org, repo):
+    """Open + recently updated closed PRs."""
     prs = []
     for state in ('open', 'closed'):
         url = f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls"
-        response = requests.get(url, headers=giji.GITHUB_HEADERS,
-                                params={"state": state, "per_page": 30, "sort": "updated", "direction": "desc"},
-                                timeout=30)
+        response = session.get(url, headers=giji.GITHUB_HEADERS,
+                               params={"state": state, "per_page": 30, "sort": "updated", "direction": "desc"},
+                               timeout=30)
         if response.status_code == 200:
             prs.extend(response.json())
         else:
@@ -32,84 +47,82 @@ def get_all_prs(org, repo):
     return prs
 
 
-def get_db_state(cur, pr_url):
+def get_pr(org, repo, number):
+    r = session.get(f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls/{number}",
+                    headers=giji.GITHUB_HEADERS, timeout=30)
+    return r.json() if r.status_code == 200 else None
+
+
+def db_row(cur, pr_url):
+    """(stage, merged, demand key) of a PR in the DB, or None."""
+    cur.execute('SELECT "Giji Stage", "Github PR Merged", "Jira Demand Key" FROM giji_prs '
+                'WHERE "Github PR URL" = %s', (pr_url,))
+    return cur.fetchone()
+
+
+def unfinished_rows(cur, repo):
     cur.execute("""
-        SELECT "Github PR State", "Github PR Merged", "Github Review State", "Jira Demand Key"
-        FROM giji_prs WHERE "Github PR URL" = %s
-    """, (pr_url,))
-    row = cur.fetchone()
-    if not row:
-        return None
-    return {'state': row[0], 'merged': row[1], 'review_state': row[2], 'jira_key': row[3]}
+        SELECT "Github PR URL", "Jira Demand Key", "Giji Stage" FROM giji_prs
+        WHERE "Github Repo" = %s AND "Jira Demand Key" IS NOT NULL
+          AND COALESCE("Giji Stage", '') NOT IN %s
+        ORDER BY "created_at"
+    """, (repo, FINAL_STAGES))
+    return [{'url': u, 'jira_key': k, 'stage': s} for u, k, s in cur.fetchall()]
+
+
+def should_import(pr):
+    if pr.get('draft'):
+        return False
+    if pr['state'] == 'open':
+        return True
+    # merged between two scans, never seen open: catch it up, but only recent ones
+    return bool(pr.get('merged_at')) and _ts(pr['merged_at']) >= CATCHUP_SINCE
 
 
 def scan_repo(org, repo, conn, cur):
     global _imported_this_run
     logger.info("Scanning %s/%s", org, repo)
-    prs = get_all_prs(org, repo)
+
+    # 1. new PRs
+    prs = get_recent_prs(org, repo)
     logger.info("Got %d PRs from GitHub API", len(prs))
     for pr in prs:
-        pr_url = pr['html_url']
-        pr_state = pr['state']
-        pr_merged = bool(pr.get('merged_at'))
-
-        db = get_db_state(cur, pr_url)
-        logger.debug("PR %s: state=%s draft=%s in_db=%s",
-                     pr_url, pr_state, pr.get('draft'), db is not None)
-
-        if db is None:
-            if pr_state == 'open' and not pr.get('draft'):
-                if _imported_this_run >= MAX_NEW_PRS_PER_RUN:
-                    logger.info("Import limit (%d) reached, %s waits for the next run",
-                                MAX_NEW_PRS_PER_RUN, pr_url)
-                    continue
-                logger.info("New PR detected: %s", pr_url)
-                on_pr_opened(pr, org, repo, conn, cur)
-                if get_db_state(cur, pr_url) is not None:   # a Demand was actually created
-                    _imported_this_run += 1
+        row = db_row(cur, pr['html_url'])
+        previous_demand = None
+        if row is None:
+            if not should_import(pr):
+                continue
+        else:
+            stage, was_merged, key = row
+            # closed without merge (flow finished as cancelled) and now open again: needs a new Demand
+            if not (pr['state'] == 'open' and not pr.get('draft') and stage == STAGE_DONE and not was_merged):
+                continue
+            previous_demand = key or 'unknown'
+        if _imported_this_run >= MAX_NEW_PRS_PER_RUN:
+            logger.info("Import limit (%d) reached, %s waits for the next run", MAX_NEW_PRS_PER_RUN, pr['html_url'])
             continue
+        logger.info("%s PR detected: %s (%s)", "Reopened" if previous_demand else "New", pr['html_url'],
+                    "merged" if pr.get('merged_at') else pr['state'])
+        try:
+            if import_pr(pr, org, repo, conn, cur, previous_demand=previous_demand):
+                _imported_this_run += 1
+        except Exception:                                # one broken PR must not stop the others
+            conn.rollback()
+            logger.exception("Import failed for %s, will retry on the next run", pr['html_url'])
 
-        jira_key = db['jira_key']
-        if not jira_key:
-            logger.warning("PR %s is in DB but has no Jira Demand Key, skipping", pr_url)
+    # 2. every PR whose flow is not finished: compare GitHub with Jira and catch up
+    for row in unfinished_rows(cur, repo):
+        number = row['url'].rstrip('/').split('/')[-1]
+        pr = get_pr(org, repo, number)
+        if not pr:
+            logger.warning("Could not fetch %s from GitHub, will retry", row['url'])
             continue
-
-        if pr_merged and not db['merged']:
-            logger.info("PR merged: %s", pr_url)
-            on_pr_merged(pr_url, jira_key, conn, cur)
-            continue
-
-        if pr_state == 'closed' and not pr_merged and db['state'] == 'open':
-            logger.info("PR closed without merge: %s", pr_url)
-            on_pr_closed(pr_url, jira_key, conn, cur)
-            continue
-
-        if pr_state == 'open' and db['state'] == 'open':
-            review_state = get_pr_review_state(pr)
-            if review_state == 'approved' and db['review_state'] != 'approved':
-                logger.info("PR approved: %s", pr_url)
-                on_pr_approved(pr_url, jira_key, conn, cur, pr)
-
-    seen = {pr['html_url'] for pr in prs}
-    cur.execute(
-        'SELECT "Github PR URL", "Jira Demand Key" FROM giji_prs WHERE "Github Repo" = %s AND "Github PR State" = %s',
-        (repo, 'open'))
-    for pr_url, jira_key in cur.fetchall():
-        if pr_url in seen or not jira_key:
-            continue
-        number = pr_url.rstrip('/').split('/')[-1]
-        r = requests.get(f"{giji.GITHUB_API_URL}/repos/{org}/{repo}/pulls/{number}", headers=giji.GITHUB_HEADERS,
-                         timeout=30)
-        if r.status_code != 200:
-            continue
-        pr = r.json()
-        if pr.get('merged_at'):
-            logger.info("PR merged (late catch): %s", pr_url)
-            on_pr_merged(pr_url, jira_key, conn, cur)
-        elif pr['state'] == 'closed':
-            logger.info("PR closed without merge (late catch): %s", pr_url)
-            on_pr_closed(pr_url, jira_key, conn, cur)
-
+        try:
+            reconcile(pr, row, conn, cur, repo)
+        except Exception:                                # one broken PR must not stop the others
+            conn.rollback()
+            logger.exception("Reconcile failed for %s (%s), will retry on the next run",
+                             row['url'], row['jira_key'])
         time.sleep(0.5)
 
 
@@ -119,7 +132,7 @@ def main():
                 giji.env_vars.github_org, giji.env_vars.monitored_repos)
     logger.info("=" * 60)
 
-    me = requests.get(f"{giji.GITHUB_API_URL}/user", headers=giji.GITHUB_HEADERS, timeout=30)
+    me = session.get(f"{giji.GITHUB_API_URL}/user", headers=giji.GITHUB_HEADERS, timeout=30)
     logger.info("GitHub token acts as: %s (expires %s)",
                 me.json().get("login") if me.status_code == 200 else me.status_code,
                 me.headers.get("github-authentication-token-expiration"))

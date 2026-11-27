@@ -136,9 +136,25 @@ def create_prs_table(conn_csv, cur_csv):
             "updated_at" TIMESTAMP DEFAULT NOW()
         );'''
         )
+        # Progress of each PR through the Change flow (see pr_handlers.reconcile).
+        # Rows from before this column existed: closed PRs are finished, open ones are re-checked.
+        cur_csv.execute('ALTER TABLE giji_prs ADD COLUMN IF NOT EXISTS "Giji Stage" VARCHAR(20)')
+        cur_csv.execute('''UPDATE giji_prs SET "Giji Stage" =
+                CASE WHEN "Github PR State" = 'closed' THEN 'done' ELSE 'created' END
+            WHERE "Giji Stage" IS NULL AND "Jira Demand Key" IS NOT NULL''')
         conn_csv.commit()
     except Exception as e:
+        conn_csv.rollback()
         logging.error("giji_prs table: an error occurred while trying to create a table: %s", e)
+
+
+def set_stage(conn_csv, cur_csv, pr_url, stage):
+    """Record how far a PR got in the Change flow. Returns the stage."""
+    cur_csv.execute('UPDATE giji_prs SET "Giji Stage" = %s, "updated_at" = NOW() WHERE "Github PR URL" = %s',
+                    (stage, pr_url))
+    conn_csv.commit()
+    logger.info("%s -> stage %s", pr_url, stage)
+    return stage
 
 
 def get_open_prs(org, repo):
@@ -289,9 +305,11 @@ def save_pr_to_db(conn_csv, cur_csv, pr_url, pr_state, pr_merged, demand_url,
               change_prod_url, changeguide_prod_url))
         conn_csv.commit()
         logger.info("Saved PR %s to DB", pr_url)
+        return True
     except Exception as e:
         logger.error("Failed to save PR to DB: %s", e)
         conn_csv.rollback()
+        return False
 
 
 def wait_for_change_guide(change_key, max_attempts=8, delay=15):
