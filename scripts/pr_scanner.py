@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from config.connections import session          # retries 429/5xx, then raises
 
 import pull_requests_importer as giji
-from pr_handlers import import_pr, reconcile, FINAL_STAGES
+from pr_handlers import import_pr, reconcile, FINAL_STAGES, STAGE_DONE
 
 MAX_NEW_PRS_PER_RUN = int(os.getenv("MAX_NEW_PRS_PER_RUN", "2"))
 # PRs merged before Giji ever saw them are imported only if merged after this moment (ISO 8601, UTC),
@@ -53,9 +53,11 @@ def get_pr(org, repo, number):
     return r.json() if r.status_code == 200 else None
 
 
-def in_db(cur, pr_url):
-    cur.execute('SELECT 1 FROM giji_prs WHERE "Github PR URL" = %s', (pr_url,))
-    return cur.fetchone() is not None
+def db_row(cur, pr_url):
+    """(stage, merged, demand key) of a PR in the DB, or None."""
+    cur.execute('SELECT "Giji Stage", "Github PR Merged", "Jira Demand Key" FROM giji_prs '
+                'WHERE "Github PR URL" = %s', (pr_url,))
+    return cur.fetchone()
 
 
 def unfinished_rows(cur, repo):
@@ -85,15 +87,24 @@ def scan_repo(org, repo, conn, cur):
     prs = get_recent_prs(org, repo)
     logger.info("Got %d PRs from GitHub API", len(prs))
     for pr in prs:
-        if in_db(cur, pr['html_url']) or not should_import(pr):
-            continue
+        row = db_row(cur, pr['html_url'])
+        previous_demand = None
+        if row is None:
+            if not should_import(pr):
+                continue
+        else:
+            stage, was_merged, key = row
+            # closed without merge (flow finished as cancelled) and now open again: needs a new Demand
+            if not (pr['state'] == 'open' and not pr.get('draft') and stage == STAGE_DONE and not was_merged):
+                continue
+            previous_demand = key or 'unknown'
         if _imported_this_run >= MAX_NEW_PRS_PER_RUN:
             logger.info("Import limit (%d) reached, %s waits for the next run", MAX_NEW_PRS_PER_RUN, pr['html_url'])
             continue
-        logger.info("New PR detected: %s (%s)", pr['html_url'],
+        logger.info("%s PR detected: %s (%s)", "Reopened" if previous_demand else "New", pr['html_url'],
                     "merged" if pr.get('merged_at') else pr['state'])
         try:
-            if import_pr(pr, org, repo, conn, cur):
+            if import_pr(pr, org, repo, conn, cur, previous_demand=previous_demand):
                 _imported_this_run += 1
         except Exception:                                # one broken PR must not stop the others
             conn.rollback()
