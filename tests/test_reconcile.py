@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 FAIL_JIRA = None        # HTTP status every Jira read returns while set, e.g. 401
 FAIL_STATE_READS = None  # HTTP status only status/transitions reads return while set (links still work)
 SAVE_FAILS = False      # save_pr_to_db fails while set
+COMMENT_FAILS = False   # Jira add_comment fails while set
+FAIL_SUMMARY = None     # HTTP status only summary reads return while set
 GH = {}                 # PR number -> GitHub PR dict
 REVIEWS = {}            # PR number -> list of (reviewer, state)
 LABELS = {}             # PR number -> labels added by Giji
@@ -87,19 +89,24 @@ class FakeJira:
         transitions = {}
         if issue['type'] == 'Task' and issue['status'] == 'Open':
             transitions['Done'] = 'done'
-        if issue['type'] in ('Change', 'Demand') and issue['status'] not in ('Cancelled', 'Done'):
+        if issue['type'] in ('Change', 'Demand') and issue['status'] not in ('Cancelled', 'Done') \
+                and not issue.get('no_stop'):
             transitions['Stop'] = 'stop'
         if issue['type'] == 'Change' and issue['approvals'] < 2:
             transitions['Approve'] = 'approve'
         return transitions
 
     def get_issue_summary(self, key):
-        return self.issues[key]['summary']
+        # like the real client: a failed read comes back as an empty string
+        return "" if (FAIL_JIRA or FAIL_SUMMARY) else self.issues[key]['summary']
 
     def get_change_guide_url(self, key):
         return self.issues[key]['guide']
 
-    def add_comment(self, *args):
+    def add_comment(self, key, text):
+        if COMMENT_FAILS:
+            return False
+        self.issues[key].setdefault('comments', []).append(text)
         return True
 
 
@@ -109,6 +116,7 @@ class FakeDB:
     def __init__(self):
         self.rows = {}
         self._result = []
+        self.rowcount = 0
 
     def cursor(self):
         return self
@@ -124,8 +132,15 @@ class FakeDB:
 
     def execute(self, sql, params=()):
         self._result = []
-        if sql.strip().startswith('SELECT 1'):
-            self._result = [(1,)] if params[0] in self.rows else []
+        if sql.startswith('SELECT "Giji Stage", "Github PR Merged", "Jira Demand Key"'):
+            r = self.rows.get(params[0])
+            self._result = [(r['stage'], r.get('merged', False), r['key'])] if r else []
+        elif sql.strip().startswith('UPDATE giji_prs SET "Jira Demand Key" = %s'):        # _reset_row
+            key, _, stage, url = params
+            self.rowcount = 0
+            if url in self.rows:
+                self.rows[url].update(key=key, stage=stage, merged=False)
+                self.rowcount = 1
         elif 'SELECT "Github PR URL", "Jira Demand Key", "Giji Stage"' in sql:
             repo, final = params
             self._result = [(url, r['key'], r['stage']) for url, r in self.rows.items()
@@ -163,10 +178,14 @@ def fake_get(url, headers=None, params=None, timeout=None, cert=None):
             return Resp(FAIL_JIRA, None)
         rest = url.split('/issue/')[1]
         key = rest.split('?')[0].split('/')[0]
+        if FAIL_SUMMARY and 'fields=summary' in rest:
+            return Resp(FAIL_SUMMARY, None)
         if FAIL_STATE_READS and (rest.endswith('/transitions') or 'fields=status' in rest):
             return Resp(FAIL_STATE_READS, None)
         if rest.endswith('/transitions'):
             return Resp(200, {'transitions': [{'name': n, 'id': i} for n, i in J.get_transitions(key).items()]})
+        if 'fields=summary' in rest:
+            return Resp(200, {'fields': {'summary': J.issues[key]['summary']}})
         if 'issuelinks' in rest:
             links = []
             for k in J.issues[key]['links']:
@@ -302,7 +321,7 @@ def all_done(number, prefix):
 
 
 def test_reconcile_scenarios():
-    global FAIL_JIRA, FAIL_STATE_READS, SAVE_FAILS
+    global FAIL_JIRA, FAIL_STATE_READS, SAVE_FAILS, COMMENT_FAILS, FAIL_SUMMARY
 
     # 1. slow Jira: the Changes appear two runs after NoTestNoDoc
     J.changes_delay = 2
@@ -412,14 +431,19 @@ def test_reconcile_scenarios():
     run()
     assert stage(16) == 'done'
 
-    # 9. merged without an approving review: Giji gives no approvals, hands over to a human
+    # 9. merged without an approving review: Giji gives no approvals, hands over to a human,
+    #    but only once the note on the Demand was actually posted
     pr(8)
     run()
     run()
     merge(8, '2026-11-26T14:00:00Z')
+    COMMENT_FAILS = True
     run()
+    assert stage(8) == 'opened'
+    COMMENT_FAILS = False
     run()
     assert stage(8) == 'manual' and not tasks(8, 'EXECUTE')
+    assert any('without an approving review' in c for c in J.issues[demand(8)]['comments'])
 
     # 10. one approval plus an outstanding change request is not "approved"
     pr(9)
@@ -459,6 +483,53 @@ def test_reconcile_scenarios():
     run()
     g.build_issue_data = real
     assert stage(12) is None and stage(13) == 'created'
+
+    # 15. closed without merge, then reopened: a new Demand, the old one stays cancelled
+    pr(17)
+    run()
+    run()
+    old = demand(17)
+    GH[17].update(state='closed')
+    run()
+    assert stage(17) == 'done' and J.issues[old]['status'] == 'Cancelled'
+    GH[17].update(state='open')
+    run()
+    new = demand(17)
+    assert new != old and stage(17) == 'created' and J.issues[old]['status'] == 'Cancelled'
+    run()
+    assert stage(17) == 'opened' and J.issues[new]['links']
+    REVIEWS[17] = [('a', 'APPROVED')]
+    merge(17, '2026-11-26T15:00:00Z')
+    run()
+    run()
+    assert stage(17) == 'done' and all_done(17, 'EXECUTE')
+
+    # 16. a merged PR whose flow is done is never re-imported, even though it is "in the DB, done"
+    before = len(J.issues)
+    run()
+    assert demand(1) and stage(1) == 'done' and len(J.issues) == before
+
+    # 17. closed without merge, but a Change offers no Stop in its status: handed over, not retried forever
+    pr(18)
+    run()
+    run()
+    stuck = J.issues[demand(18)]['links'][0]
+    J.issues[stuck]['no_stop'] = True
+    GH[18].update(state='closed')
+    run()
+    assert stage(18) == 'manual'
+    assert any(stuck in c for c in J.issues[demand(18)]['comments'])
+
+    # 18. the Changes exist but their summary cannot be read: no stage moves (no PreProd URL filed as Prod)
+    pr(19)
+    run()                                   # Demand + NoTestNoDoc; Jira creates the Changes after this run
+    FAIL_SUMMARY = 404
+    run()
+    run()
+    assert stage(19) == 'created'
+    FAIL_SUMMARY = None
+    run()
+    assert stage(19) == 'opened'
 
     # 14. PR_CATCHUP_SINCE without a timezone is taken as UTC
     assert pr_scanner._ts("2026-11-26") <= pr_scanner._ts("2026-11-26T10:00:00Z")

@@ -60,6 +60,11 @@ def _transitions(key):
     return {t['name']: t['id'] for t in _jira_get(f"issue/{key}/transitions")['transitions']}
 
 
+def _summary(key):
+    """Summary of an issue. Raises JiraReadError if Jira did not answer."""
+    return _jira_get(f"issue/{key}?fields=summary")['fields']['summary']
+
+
 def _status(key):
     """(status name, status category key: 'new' / 'indeterminate' / 'done'). Raises JiraReadError."""
     status = _jira_get(f"issue/{key}?fields=status")['fields']['status']
@@ -97,15 +102,17 @@ def get_pr_review_state(pr):
 
 # ---------------------------------------------------------------- import
 
-def import_pr(pr, org, repo, conn, cur):
+def import_pr(pr, org, repo, conn, cur, previous_demand=None):
     """Create the Demand for a PR. Returns True if a Demand was created and recorded.
 
+    previous_demand: the cancelled Demand of a PR that was closed without merge and is now reopened;
+    the PR still carries the imported label from then, and its DB row is reset to the new Demand.
     The rest of the flow (NoTestNoDoc, Changes, approvals, closure) is done by reconcile()."""
     pr_url = pr['html_url']
     pr_number = pr['number']
     merged = bool(pr.get('merged_at'))
 
-    if giji.is_pr_already_imported(org, repo, pr_number):
+    if not previous_demand and giji.is_pr_already_imported(org, repo, pr_number):
         logger.info("PR %s already has the imported label but is not in the DB, skipping", pr_url)
         return False
 
@@ -133,8 +140,12 @@ def import_pr(pr, org, repo, conn, cur):
         return False
 
     jira_key = issue['key']
-    logger.info("Created Demand %s for %s%s", jira_key, pr_url, " (merged before Giji saw it)" if merged else "")
-    if not _save_state(conn, cur, pr, repo, jira_key, {}):
+    logger.info("Created Demand %s for %s%s", jira_key, pr_url,
+                " (merged before Giji saw it)" if merged
+                else f" (reopened, previous Demand {previous_demand} was cancelled)" if previous_demand else "")
+    recorded = (_reset_row(conn, cur, pr_url, jira_key) if previous_demand
+                else _save_state(conn, cur, pr, repo, jira_key, {}))
+    if not recorded:
         logger.error("Demand %s for %s could not be recorded in the DB, cancelling it", jira_key, pr_url)
         stop_id = giji.jira_client.get_transitions(jira_key).get('Stop')
         reason = "Giji could not record this Demand; a new one is created on the next run."
@@ -147,7 +158,9 @@ def import_pr(pr, org, repo, conn, cur):
     giji.add_label_to_pr(org, repo, pr_number, [giji.IMPORTED_LABEL])
     giji.add_comment_to_pr(
         org, repo, pr_number,
-        f"Imported to Jira: [{jira_key}]({giji.env_vars.jira_api_url}/browse/{jira_key})")
+        f"Imported to Jira: [{jira_key}]({giji.env_vars.jira_api_url}/browse/{jira_key})"
+        + (f" (the PR was reopened; the previous Demand {previous_demand} stays cancelled)"
+           if previous_demand else ""))
 
     release_notes = fields.get('release_notes')
     if release_notes:
@@ -181,7 +194,7 @@ def _ensure_opened(pr, jira_key, fields, conn, cur, repo):
 
     urls, complete = {}, True
     for change_key in changes:
-        prefix = 'preprod' if giji.jira_client.get_issue_summary(change_key).startswith("PreProd:") else 'prod'
+        prefix = 'preprod' if _summary(change_key).startswith("PreProd:") else 'prod'
         urls[f'change_{prefix}_url'] = giji.jira_client.link(change_key)
         guide_url = giji.jira_client.get_change_guide_url(change_key)
         if guide_url:
@@ -247,19 +260,37 @@ def _ensure_merged(changes):
 
 def _ensure_cancelled(pr_url, jira_key, changes):
     """Cancel the Changes and the Demand of a PR closed without merge.
-    Complete only when every one of them is in a final status."""
+
+    Returns (complete, stuck): complete when every one of them is in a final status; stuck lists the
+    issues that are not final and offer no Stop transition, so Giji can never cancel them itself."""
     reason = f"Pull request was closed without merge: {pr_url}. Cancelled automatically by Giji."
-    complete = True
+    complete, stuck = True, []
     for key in changes + [jira_key]:
         if _status(key)[1] == 'done':
             continue                                    # already stopped or closed
         stop_id = _transitions(key).get('Stop')
-        if stop_id and giji.jira_client.transition_issue(key, stop_id, comment=reason):
+        if not stop_id:
+            stuck.append(key)
+            complete = False
+            continue
+        if giji.jira_client.transition_issue(key, stop_id, comment=reason):
             logger.info("Cancelled %s", key)
         if _status(key)[1] != 'done':
             logger.warning("%s is not in a final status yet, will check again on the next run", key)
             complete = False
-    return complete
+    return complete, stuck
+
+
+def _hand_over(conn, cur, pr_url, jira_key, text):
+    """Leave a note for a human on the Demand and stop reconciling the PR.
+    The stage goes final only if the note was posted; otherwise the next run tries again."""
+    if not giji.jira_client.add_comment(jira_key, text):
+        logger.error("Could not post the hand-over comment on %s for %s, will retry on the next run",
+                     jira_key, pr_url)
+        return False
+    giji.set_stage(conn, cur, pr_url, STAGE_MANUAL)
+    logger.warning("PR %s handed over to a human on %s", pr_url, jira_key)
+    return True
 
 
 # ---------------------------------------------------------------- reconcile
@@ -274,8 +305,14 @@ def reconcile(pr, row, conn, cur, repo):
     fields = giji.parse_pr_body(pr.get('body') or '')
 
     if closed_unmerged:
-        if _ensure_cancelled(pr_url, jira_key, _linked(jira_key, _is_change)):
+        complete, stuck = _ensure_cancelled(pr_url, jira_key, _linked(jira_key, _is_change))
+        if complete:
             _finish(conn, cur, pr_url, merged=False)
+        elif stuck:
+            # their status offers no Stop: retrying forever would change nothing
+            _hand_over(conn, cur, pr_url, jira_key,
+                       f"The pull request {pr_url} was closed without merge, but Giji cannot cancel "
+                       f"{', '.join(stuck)}: no Stop transition in the current status. Please cancel by hand.")
         return
 
     if stage == STAGE_CREATED:
@@ -299,12 +336,10 @@ def reconcile(pr, row, conn, cur, repo):
             if merged:
                 # The change is already live, but nobody approved it in GitHub: Giji does not approve the
                 # Change in Jira on its own. Hand it over to a human and stop reconciling it.
-                giji.jira_client.add_comment(
-                    jira_key, f"The pull request {pr_url} was merged without an approving review "
-                              f"(review state: {review}). Giji did not approve the Changes; "
-                              f"please complete them by hand.")
-                giji.set_stage(conn, cur, pr_url, STAGE_MANUAL)
-                logger.warning("PR %s merged without approval, %s handed over to a human", pr_url, jira_key)
+                _hand_over(conn, cur, pr_url, jira_key,
+                           f"The pull request {pr_url} was merged without an approving review "
+                           f"(review state: {review}). Giji did not approve the Changes; "
+                           f"please complete them by hand.")
             return
         logger.info("PR %s is approved%s, running the approval steps for %s",
                     pr_url, " and merged" if merged else "", jira_key)
@@ -335,6 +370,25 @@ def _set_review_state(conn, cur, pr_url, state):
     cur.execute('UPDATE giji_prs SET "Github Review State" = %s, "updated_at" = NOW() WHERE "Github PR URL" = %s',
                 (state, pr_url))
     conn.commit()
+
+
+def _reset_row(conn, cur, pr_url, jira_key):
+    """Point the row of a reopened PR to its new Demand and start its flow over. Returns True if written."""
+    try:
+        cur.execute("""
+            UPDATE giji_prs SET "Jira Demand Key" = %s, "Jira Demand URL" = %s,
+                   "Github PR State" = 'open', "Github PR Merged" = FALSE, "Github Review State" = NULL,
+                   "Jira Change URL PreProd" = NULL, "Changeguide URL PreProd" = NULL,
+                   "Jira Change URL Prod" = NULL, "Changeguide URL Prod" = NULL,
+                   "Giji Stage" = %s, "updated_at" = NOW()
+            WHERE "Github PR URL" = %s
+        """, (jira_key, giji.jira_client.link(jira_key), STAGE_CREATED, pr_url))
+        conn.commit()
+        return cur.rowcount == 1
+    except Exception as e:
+        conn.rollback()
+        logger.error("Failed to reset the DB row of %s: %s", pr_url, e)
+        return False
 
 
 def _save_state(conn, cur, pr, repo, jira_key, urls):
